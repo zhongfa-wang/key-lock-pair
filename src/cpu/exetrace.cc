@@ -194,9 +194,9 @@ ExeTracerRecord::traceInst(const StaticInstPtr &inst, bool ran)
     //
     outs << std::endl;
 
-    trace::getDebugLogger()->dprintf_flag(
-        when, thread->getCpuPtr()->name(), "ExecEnable", "%s",
-        outs.str().c_str());
+    // trace::getDebugLogger()->dprintf_flag(
+    //     when, thread->getCpuPtr()->name(), "ExecEnable", "%s",
+    //     outs.str().c_str());
 }
 
 void
