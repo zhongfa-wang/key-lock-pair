@@ -41,26 +41,55 @@
 #include "cpu/exetrace.hh"
 
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 
 #include "arch/generic/mmu.hh"
 #include "base/loader/symtab.hh"
+#include "base/types.hh"
 #include "cpu/base.hh"
+#include "cpu/reg_class.hh"
 #include "cpu/static_inst.hh"
 #include "cpu/thread_context.hh"
 #include "debug/ExecAll.hh"
 #include "debug/FmtTicksOff.hh"
 #include "enums/OpClass.hh"
+//[klp]
+#include "debug/ExecMemAccStats.hh"
 
 namespace gem5
 {
 
 namespace trace {
-
+std::map<Addr, std::map<RegVal,ExeTracerRecord::info_item>> ExeTracerRecord::suite_mem_acc_tracking;
 void
 ExeTracerRecord::traceInst(const StaticInstPtr &inst, bool ran)
 {
     std::stringstream outs;
+    // [klp] { flag updata
+    if (debug::MemStatsEnable && staticInst->isLoad()){
+      Addr addr_16b_rdup = addr & ~0xF; // memory addr rounded up to 16B
+      RegId instRs1_id = staticInst->srcRegIdx(0);
+      RegVal instRs1_val = thread->getReg(instRs1_id);
+      info_item info_item_tmp;
+      info_item_tmp.inst_vaddr = thread->getMMUPtr()->getValidAddr(pc->instAddr(), thread, BaseMMU::Execute),
+      info_item_tmp.frequency = 1;
+
+      if(suite_mem_acc_tracking.find(addr_16b_rdup)==suite_mem_acc_tracking.end()){
+        if((int)staticInst->numSrcRegs() == 0){
+          warn("This load instruction has no source register!\n");
+          return;
+        }
+        suite_mem_acc_tracking[addr_16b_rdup][instRs1_val] = info_item_tmp;
+      }else{
+        if(suite_mem_acc_tracking[addr_16b_rdup].find(instRs1_val)==suite_mem_acc_tracking[addr_16b_rdup].end()){
+          suite_mem_acc_tracking[addr_16b_rdup][instRs1_val] = info_item_tmp;
+        }else{
+          suite_mem_acc_tracking[addr_16b_rdup][instRs1_val].frequency++;
+        }
+      }
+    }
+    //[klp] } end
 
     const bool in_user_mode = thread->getIsaPtr()->inUserMode();
     if (in_user_mode && !debug::ExecUser)
@@ -130,6 +159,22 @@ ExeTracerRecord::traceInst(const StaticInstPtr &inst, bool ran)
 
         if (debug::ExecEffAddr && getMemValid())
             outs << " A=0x" << std::hex << addr;
+          // //[klp] { test
+          // {
+          //   outs << " A=0x" << std::hex << addr;
+          //   Addr tmp16b_addr = addr & ~0xF;
+          //   auto it = suite_mem_acc_tracking.find(tmp16b_addr);
+          //   if (it == suite_mem_acc_tracking.end()){
+          //     outs << " Key " <<tmp16b_addr<<" doesn't exists in the map. ";
+          //   }else{
+          //     outs << " Key " << tmp16b_addr << "exists in the map. ";
+          //     for(auto it_in = suite_mem_acc_tracking[tmp16b_addr].begin(); it_in!=suite_mem_acc_tracking[tmp16b_addr].end();it_in++){
+          //       outs << " Start: "<< " No. of rs1: "<< suite_mem_acc_tracking[tmp16b_addr].size() <<" regval: " << it_in->first << " inst_vaddr: " << it_in->second.inst_vaddr << " inst_freq: " << it_in->second.frequency << " seqNum: "<< it_in->second.sequence_number << " end ";
+          //     }
+          //   }
+
+          // }
+          // //[klp] } end
 
         if (debug::ExecFetchSeq && fetch_seq_valid)
             outs << "  FetchSeq=" << std::dec << fetch_seq;

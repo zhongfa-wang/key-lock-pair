@@ -41,6 +41,11 @@
 #ifndef __CPU_EXETRACE_HH__
 #define __CPU_EXETRACE_HH__
 
+// [klp] { Begin
+#include <iostream>
+#include "sim/core.hh"
+#include "sim/sim_exit.hh"
+// [klp] } End
 #include "base/trace.hh"
 #include "base/types.hh"
 #include "cpu/static_inst.hh"
@@ -58,6 +63,16 @@ namespace trace {
 
 class ExeTracerRecord : public InstRecord
 {
+  // [klp] { The item strucutre tracking inst info
+  public:  
+    struct info_item 
+      {
+        Addr inst_vaddr;
+        long long frequency;
+        info_item():inst_vaddr(0),frequency(0){}
+      };
+    static std::map<Addr, std::map<RegVal,info_item>> suite_mem_acc_tracking;
+  // [klp] } End
   public:
     ExeTracerRecord(Tick _when, ThreadContext *_thread,
                const StaticInstPtr _staticInst, const PCStateBase &_pc,
@@ -80,10 +95,52 @@ class ExeTracerRecord : public InstRecord
 
 class ExeTracer : public InstTracer
 {
+  private:
+    static void dumpStats(){
+      std::cout << "Dumping statistics in dumpStats() function.\n";
+      std::ofstream outfile("./MemAccessStats.json");
+      if (!outfile.is_open()){
+        std::cout<<"Error: could not onpen the logging file.\n" << std::endl;
+        return;
+      }
+      outfile << "{\n";
+      for(auto it_1 = ExeTracerRecord::suite_mem_acc_tracking.begin();
+          // "maddr": {
+          //   "rs1": {
+          //     "instVaddr": "",
+          //     "frequency": 
+          //   }
+          it_1 != ExeTracerRecord::suite_mem_acc_tracking.end(); it_1++){
+            outfile << " \"0x" << std::hex << it_1->first << "\": {\n";
+            for(auto it_2 = it_1->second.begin();it_2 != it_1->second.end(); it_2++){
+              outfile << "  \"0x"<< std::hex << it_2->first << "\": {\n";
+              // outfile << "    \"instVaddr\": \"0x" << std::hex << it_2->second.inst_vaddr << "\",\n";
+              outfile << "    \"freq\": " << std::dec << it_2->second.frequency << "\n";
+              outfile << "  }";
+              if(it_2 != --it_1->second.end()){
+                outfile << ",\n";
+              }else{
+                outfile << "\n";
+              }
+            }
+            outfile << " }";
+            if(it_1 != --ExeTracerRecord::suite_mem_acc_tracking.end()){
+              outfile << ",\n";
+            }else{
+              outfile << "\n";
+            }
+          }
+      outfile << "}\n";
+      outfile.close();
+    }
   public:
     typedef ExeTracerParams Params;
     ExeTracer(const Params &params) : InstTracer(params)
-    {}
+    {
+      std::cout << "Creating an ExeTracer object.\n";
+      std::cout << "Registring a callback dump function.\n";
+      registerExitCallback(dumpStats);
+    }
 
     InstRecord *
     getInstRecord(Tick when, ThreadContext *tc,
