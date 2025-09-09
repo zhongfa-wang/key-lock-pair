@@ -61,31 +61,39 @@ namespace gem5
 {
 
 namespace trace {
-std::map<Addr, std::map<RegVal,ExeTracerRecord::info_item>> ExeTracerRecord::suite_mem_acc_tracking;
+// [klp] {
+std::map<Addr, ExeTracerRecord::maddr_info> ExeTracerRecord::suite_mem_acc_tracking;
+//[klp] } end
 void
 ExeTracerRecord::traceInst(const StaticInstPtr &inst, bool ran)
 {
     std::stringstream outs;
-    // [klp] { flag updata
+    // [klp] { flag update
     if (debug::MemStatsEnable && staticInst->isLoad()){
-      Addr addr_16b_rdup = addr & ~0xF; // memory addr rounded up to 16B
-      RegId instRs1_id = staticInst->srcRegIdx(0);
-      RegVal instRs1_val = thread->getReg(instRs1_id);
-      info_item info_item_tmp;
-      info_item_tmp.inst_vaddr = thread->getMMUPtr()->getValidAddr(pc->instAddr(), thread, BaseMMU::Execute),
-      info_item_tmp.frequency = 1;
-
+      Addr addr_16b_rdup = addr & ~0xF;                    // memory addr rounded up to 16B
+      RegId instRs1_id = staticInst->srcRegIdx(0);       // rs1 id
+      RegVal instRs1_val = thread->getReg(instRs1_id); // rs1 value
+      rs1_info rs1_info_tmp;
+      rs1_info_tmp.inst_vaddr = thread->getMMUPtr()->getValidAddr(pc->instAddr(), thread, BaseMMU::Execute),
+      rs1_info_tmp.mem_acc_freq = 1;
+      // Updating switch_freq and last_rs1_val for each maddr
+      if(instRs1_val != suite_mem_acc_tracking[addr_16b_rdup].last_rs1_val){
+        suite_mem_acc_tracking[addr_16b_rdup].switch_freq++;
+        suite_mem_acc_tracking[addr_16b_rdup].last_rs1_val = instRs1_val;
+      }
+      // Updating rs1_data_map for each maddr
       if(suite_mem_acc_tracking.find(addr_16b_rdup)==suite_mem_acc_tracking.end()){
         if((int)staticInst->numSrcRegs() == 0){
           warn("This load instruction has no source register!\n");
           return;
         }
-        suite_mem_acc_tracking[addr_16b_rdup][instRs1_val] = info_item_tmp;
+        // suite_mem_acc_tracking[addr_16b_rdup][instRs1_val] = rs1_info_tmp; // deprecated
+        suite_mem_acc_tracking[addr_16b_rdup].rs1_data_map[instRs1_val] = rs1_info_tmp;
       }else{
-        if(suite_mem_acc_tracking[addr_16b_rdup].find(instRs1_val)==suite_mem_acc_tracking[addr_16b_rdup].end()){
-          suite_mem_acc_tracking[addr_16b_rdup][instRs1_val] = info_item_tmp;
+        if(suite_mem_acc_tracking[addr_16b_rdup].rs1_data_map.find(instRs1_val)==suite_mem_acc_tracking[addr_16b_rdup].rs1_data_map.end()){
+          suite_mem_acc_tracking[addr_16b_rdup].rs1_data_map[instRs1_val] = rs1_info_tmp;
         }else{
-          suite_mem_acc_tracking[addr_16b_rdup][instRs1_val].frequency++;
+          suite_mem_acc_tracking[addr_16b_rdup].rs1_data_map[instRs1_val].mem_acc_freq++;
         }
       }
     }
@@ -169,7 +177,7 @@ ExeTracerRecord::traceInst(const StaticInstPtr &inst, bool ran)
           //   }else{
           //     outs << " Key " << tmp16b_addr << "exists in the map. ";
           //     for(auto it_in = suite_mem_acc_tracking[tmp16b_addr].begin(); it_in!=suite_mem_acc_tracking[tmp16b_addr].end();it_in++){
-          //       outs << " Start: "<< " No. of rs1: "<< suite_mem_acc_tracking[tmp16b_addr].size() <<" regval: " << it_in->first << " inst_vaddr: " << it_in->second.inst_vaddr << " inst_freq: " << it_in->second.frequency << " seqNum: "<< it_in->second.sequence_number << " end ";
+          //       outs << " Start: "<< " No. of rs1: "<< suite_mem_acc_tracking[tmp16b_addr].size() <<" regval: " << it_in->first << " inst_vaddr: " << it_in->second.inst_vaddr << " inst_freq: " << it_in->second.mem_acc_freq << " seqNum: "<< it_in->second.sequence_number << " end ";
           //     }
           //   }
 

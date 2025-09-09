@@ -65,13 +65,21 @@ class ExeTracerRecord : public InstRecord
 {
   // [klp] { The item strucutre tracking inst info
   public:  
-    struct info_item 
+    struct rs1_info             // info of each rs1
       {
-        Addr inst_vaddr;
-        long long frequency;
-        info_item():inst_vaddr(0),frequency(0){}
+        Addr inst_vaddr;        // the addr of the inst that rs1 resides in,
+        long long mem_acc_freq; // the frequency in which the inst accesses the 16B maddr
+        rs1_info():inst_vaddr(0),mem_acc_freq(0){}
       };
-    static std::map<Addr, std::map<RegVal,info_item>> suite_mem_acc_tracking;
+    struct maddr_info                         // info of each maddr
+    {
+      long long switch_freq;                  // frequency of instructions using new rs1 to access the 16B maddr
+      RegVal last_rs1_val;                    // previous rs1's value that accesses the 16B maddr
+      std::map<RegVal,rs1_info> rs1_data_map; // rs1:rs1_info pair
+      maddr_info():switch_freq(0),last_rs1_val(0),rs1_data_map(){}
+    };
+    // static std::map<Addr, std::map<RegVal,rs1_info>> suite_mem_acc_tracking; //Deprecated
+    static std::map<Addr, maddr_info> suite_mem_acc_tracking;
   // [klp] } End
   public:
     ExeTracerRecord(Tick _when, ThreadContext *_thread,
@@ -95,6 +103,7 @@ class ExeTracerRecord : public InstRecord
 
 class ExeTracer : public InstTracer
 {
+    // [klp] { 
   private:
     static void dumpStats(){
       std::cout << "Dumping statistics in dumpStats() function.\n";
@@ -104,27 +113,32 @@ class ExeTracer : public InstTracer
         return;
       }
       outfile << "{\n";
-      for(auto it_1 = ExeTracerRecord::suite_mem_acc_tracking.begin();
-          // "maddr": {
-          //   "rs1": {
-          //     "instVaddr": "",
-          //     "frequency": 
+      for(auto it_maddr = ExeTracerRecord::suite_mem_acc_tracking.begin();
+          // {
+          //   $maddr: {
+          //     "rs1_switch_freq" :,
+          //     "rs1_info":[
+          //       {$rs1:$rs1_freq_val, "instVaddr": $instvaddr},
+          //       ...]
           //   }
-          it_1 != ExeTracerRecord::suite_mem_acc_tracking.end(); it_1++){
-            outfile << " \"0x" << std::hex << it_1->first << "\": {\n";
-            for(auto it_2 = it_1->second.begin();it_2 != it_1->second.end(); it_2++){
-              outfile << "  \"0x"<< std::hex << it_2->first << "\": {\n";
-              // outfile << "    \"instVaddr\": \"0x" << std::hex << it_2->second.inst_vaddr << "\",\n";
-              outfile << "    \"freq\": " << std::dec << it_2->second.frequency << "\n";
+          //    ...
+          // }
+          it_maddr != ExeTracerRecord::suite_mem_acc_tracking.end(); it_maddr++){
+            outfile << " \"0x" << std::hex << it_maddr->first << "\": {\n";
+            outfile << "  \"rs1_switch_freq\": " << std::dec << it_maddr->second.switch_freq << ",\n";
+            for(auto it_rs1 = it_maddr->second.rs1_data_map.begin();it_rs1 != it_maddr->second.rs1_data_map.end(); it_rs1++){
+              outfile << "  \"0x"<< std::hex << it_rs1->first << "\": {\n";
+              // outfile << "    \"instVaddr\": \"0x" << std::hex << it_rs1->second.rs1_data_map.inst_vaddr << "\",\n";
+              outfile << "    \"freq\": " << std::dec << it_rs1->second.mem_acc_freq << "\n";
               outfile << "  }";
-              if(it_2 != --it_1->second.end()){
+              if(it_rs1 != --it_maddr->second.rs1_data_map.end()){
                 outfile << ",\n";
               }else{
                 outfile << "\n";
               }
             }
             outfile << " }";
-            if(it_1 != --ExeTracerRecord::suite_mem_acc_tracking.end()){
+            if(it_maddr != --ExeTracerRecord::suite_mem_acc_tracking.end()){
               outfile << ",\n";
             }else{
               outfile << "\n";
@@ -133,6 +147,7 @@ class ExeTracer : public InstTracer
       outfile << "}\n";
       outfile.close();
     }
+  // [klp] } End
   public:
     typedef ExeTracerParams Params;
     ExeTracer(const Params &params) : InstTracer(params)
