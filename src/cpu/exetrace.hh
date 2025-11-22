@@ -117,8 +117,8 @@ class ExeTracer : public InstTracer
           // {
           //   $maddr: {
           //     "rs1_switch_freq" :,
-          //     "rs1_info":[
-          //       {$rs1:$rs1_freq_val, "instVaddr": $instvaddr},
+          //     "$rs1":[
+          //       {"freq":$rs1_freq_val, "instVaddr": $instvaddr},
           //       ...]
           //   }
           //    ...
@@ -128,7 +128,7 @@ class ExeTracer : public InstTracer
             outfile << "  \"rs1_switch_freq\": " << std::dec << it_maddr->second.switch_freq << ",\n";
             for(auto it_rs1 = it_maddr->second.rs1_data_map.begin();it_rs1 != it_maddr->second.rs1_data_map.end(); it_rs1++){
               outfile << "  \"0x"<< std::hex << it_rs1->first << "\": {\n";
-              // outfile << "    \"instVaddr\": \"0x" << std::hex << it_rs1->second.rs1_data_map.inst_vaddr << "\",\n";
+              outfile << "    \"instVaddr\": \"0x" << std::hex << it_rs1->second.inst_vaddr << "\",\n";
               outfile << "    \"freq\": " << std::dec << it_rs1->second.mem_acc_freq << "\n";
               outfile << "  }";
               if(it_rs1 != --it_maddr->second.rs1_data_map.end()){

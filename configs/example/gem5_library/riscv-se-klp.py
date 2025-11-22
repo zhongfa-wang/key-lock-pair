@@ -40,6 +40,7 @@ Characteristics
 """
 import sys
 import argparse
+import argparse
 from gem5.components.boards.riscv_board import RiscvBoard
 from gem5.components.cachehierarchies.classic.private_l1_private_l2_walk_cache_hierarchy import (
     PrivateL1PrivateL2WalkCacheHierarchy,
@@ -52,6 +53,28 @@ from gem5.resources.resource import obtain_resource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
 from gem5.resources.resource import FileResource
+
+# Setup an arg parser
+parser = argparse.ArgumentParser(
+    description="Argument parser for this RISCV gem5 configuration scritpt."
+)
+parser.add_argument(
+    "--maxinsts",
+    type=int,
+    default=None,
+    help="The maximum number of instructions under simulation."
+)
+parser.add_argument(
+    "binary",
+    type=str,
+    help="The path to the simulated binary"
+)
+parser.add_argument(
+    "binary_args",
+    nargs=argparse.REMAINDER,
+    help="Arguments for the simualted binary."
+)
+args = parser.parse_args()
 
 # Setup an arg parser
 parser = argparse.ArgumentParser(
@@ -90,7 +113,7 @@ memory = SingleChannelDDR3_1600()
 
 # Setup a single core Processor.
 processor = SimpleProcessor(
-    cpu_type=CPUTypes.O3, #O3, ATOMIC 
+    cpu_type=CPUTypes.ATOMIC, #O3, ATOMIC 
     isa=ISA.RISCV, 
     num_cores=1
 )
@@ -108,6 +131,8 @@ board.set_se_binary_workload(
     # obtain_resource("riscv-hello")
     binary = FileResource(args.binary),
     arguments = args.binary_args
+    binary = FileResource(args.binary),
+    arguments = args.binary_args
 )
 
 simulator = Simulator(board=board)
@@ -116,6 +141,12 @@ if args.maxinsts:
     print(f"Scheduling simulation exit after {args.maxinsts} instructions.")
     simulator.schedule_max_insts(args.maxinsts)
 
+
+if args.maxinsts:
+    print(f"Scheduling simulation exit after {args.maxinsts} instructions.")
+    simulator.schedule_max_insts(args.maxinsts)
+
 print("Beginning simulation!")
 simulator.run()
+print("Simulation finished!")
 print("Simulation finished!")
