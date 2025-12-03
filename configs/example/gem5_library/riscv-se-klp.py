@@ -39,6 +39,7 @@ Characteristics
   password: `root`)
 """
 import sys
+import argparse
 from gem5.components.boards.riscv_board import RiscvBoard
 from gem5.components.cachehierarchies.classic.private_l1_private_l2_walk_cache_hierarchy import (
     PrivateL1PrivateL2WalkCacheHierarchy,
@@ -51,6 +52,28 @@ from gem5.resources.resource import obtain_resource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
 from gem5.resources.resource import FileResource
+
+# Setup an arg parser
+parser = argparse.ArgumentParser(
+    description="Argument parser for this RISCV gem5 configuration scritpt."
+)
+parser.add_argument(
+    "--maxinsts",
+    type=int,
+    default=None,
+    help="The maximum number of instructions under simulation."
+)
+parser.add_argument(
+    "binary",
+    type=str,
+    help="The path to the simulated binary"
+)
+parser.add_argument(
+    "binary_args",
+    nargs=argparse.REMAINDER,
+    help="Arguments for the simualted binary."
+)
+args = parser.parse_args()
 
 # Run a check to ensure the right version of gem5 is being used.
 requires(isa_required=ISA.RISCV)
@@ -67,9 +90,9 @@ memory = SingleChannelDDR3_1600()
 
 # Setup a single core Processor.
 processor = SimpleProcessor(
-    cpu_type=CPUTypes.O3, 
+    cpu_type=CPUTypes.O3, #O3, ATOMIC 
     isa=ISA.RISCV, 
-    num_cores=2
+    num_cores=1
 )
 
 # Setup the board.
@@ -81,27 +104,18 @@ board = RiscvBoard(
 )
 
 # Set the Syscall Emulation (SE) workload.
-binary_path = sys.argv[1]
-binary_args = sys.argv[2:]
-# binary_path = "/home/zhongfa/workdir/run/benchmark/speccpu2017-1.1.9/src/benchspec/CPU/500.perlbench_r/exe/perlbench_r_base.rv64gc-gcc-64"
-# binary_args = [
-#     '-I',
-#     '/home/zhongfa/workdir/run/benchmark/speccpu2017-1.1.9/src/benchspec/CPU/500.perlbench_r/run/run_base_refrate_rv64gc-gcc-64.0000',
-#     '-I',
-#     '/home/zhongfa/workdir/run/benchmark/speccpu2017-1.1.9/src/benchspec/CPU/500.perlbench_r/run/run_base_refrate_rv64gc-gcc-64.0000/lib',
-#     '/home/zhongfa/workdir/run/benchmark/speccpu2017-1.1.9/src/benchspec/CPU/500.perlbench_r/data/test/input/makerand.pl'
-# ]
 board.set_se_binary_workload(
     # obtain_resource("riscv-hello")
-    binary = FileResource(binary_path),
-    arguments = binary_args
+    binary = FileResource(args.binary),
+    arguments = args.binary_args
 )
 
-
 simulator = Simulator(board=board)
+
+if args.maxinsts:
+    print(f"Scheduling simulation exit after {args.maxinsts} instructions.")
+    simulator.schedule_max_insts(args.maxinsts)
+
 print("Beginning simulation!")
-# Note: This simulation will never stop. You can access the terminal upon boot
-# using m5term (`./util/term`): `./m5term localhost <port>`. Note the `<port>`
-# value is obtained from the gem5 terminal stdout. Look out for
-# "system.platform.terminal: Listening for connections on port <port>".
 simulator.run()
+print("Simulation finished!")
