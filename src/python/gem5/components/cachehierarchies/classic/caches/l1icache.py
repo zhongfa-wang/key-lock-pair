@@ -54,6 +54,8 @@ class L1ICache(Cache):
         tgts_per_mshr: int = 20,
         writeback_clean: bool = True,
         PrefetcherCls: Type[BasePrefetcher] = StridePrefetcher,
+        # [klp] Adding CacheLevel parameter
+        cache_level = 'L1I'
     ):
         super().__init__()
         self.size = size
@@ -65,3 +67,5 @@ class L1ICache(Cache):
         self.tgts_per_mshr = tgts_per_mshr
         self.writeback_clean = writeback_clean
         self.prefetcher = PrefetcherCls()
+        # [klp] Adding CacheLevel parameter
+        self.cache_level = cache_level

@@ -76,6 +76,8 @@
 #include "sim/serialize.hh"
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"
+// [klp] include the header that contains the cachelevel enum
+#include "enums/CacheLevel.hh"
 
 namespace gem5
 {
@@ -99,6 +101,11 @@ struct BaseCacheParams;
 class BaseCache : public ClockedObject
 {
   protected:
+    /**
+    * Flag reflexing cache levels: l1d, l1i, l2, l3, tlb, others
+    */
+    const enums::CacheLevel cache_level;
+
     /**
      * Indexes to enumerate the MSHR queues.
      */

@@ -53,6 +53,8 @@ class L2Cache(Cache):
         writeback_clean: bool = False,
         clusivity: Clusivity = "mostly_incl",
         PrefetcherCls: Type[BasePrefetcher] = StridePrefetcher,
+        # [klp] Adding CacheLevel parameter
+        cache_level = 'L2'
     ):
         super().__init__()
         self.size = size
@@ -65,3 +67,5 @@ class L2Cache(Cache):
         self.writeback_clean = writeback_clean
         self.clusivity = clusivity
         self.prefetcher = PrefetcherCls()
+        # [klp] Adding CacheLevel parameter
+        self.cache_level = cache_level

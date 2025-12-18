@@ -76,12 +76,18 @@ class WriteAllocator(SimObject):
 
     block_size = Param.Int(Parent.cache_line_size, "block size in bytes")
 
+# [klp] Define enum type of cache level
+class CacheLevel(Enum):
+    vals = ['L1I','L1D','L2','L3','TLB','OTHERS']
 
 class BaseCache(ClockedObject):
     type = "BaseCache"
     abstract = True
     cxx_header = "mem/cache/base.hh"
     cxx_class = "gem5::BaseCache"
+
+    # [klp] Add the cache_level parameter to class BaseCache
+    cache_level = Param.CacheLevel("Cache level")
 
     size = Param.MemorySize("Capacity")
     assoc = Param.Unsigned("Associativity")

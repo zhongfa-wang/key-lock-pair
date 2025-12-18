@@ -80,6 +80,7 @@ BaseCache::CacheResponsePort::CacheResponsePort(const std::string &_name,
 
 BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
     : ClockedObject(p),
+      cache_level(p.cache_level),
       cpuSidePort (p.name + ".cpu_side_port", *this, "CpuSidePort"),
       memSidePort(p.name + ".mem_side_port", this, "MemSidePort"),
       accessor(*this),
@@ -407,6 +408,27 @@ BaseCache::handleTimingReqMiss(PacketPtr pkt, MSHR *mshr, CacheBlk *blk,
 void
 BaseCache::recvTimingReq(PacketPtr pkt)
 {
+    // [klp]
+    switch (cache_level){
+      case enums::CacheLevel::L1I :
+        std::cout << "This is L1I!" << std::endl;
+        break;
+      case enums::CacheLevel::L1D :
+        std::cout << "This is L1D!" << std::endl;
+        break;
+      case enums::CacheLevel::L2 :
+        std::cout << "This is L2!" << std::endl;
+        break;
+      case enums::CacheLevel::L3 :
+        std::cout << "This is L3!" << std::endl;
+        break;
+      case enums::CacheLevel::TLB :
+        std::cout << "This is TLB!" << std::endl;
+        break;
+      default:
+        std::cout << "This is others!" << std::endl;
+    }
+
     // anything that is merely forwarded pays for the forward latency and
     // the delay provided by the crossbar
     Tick forward_time = clockEdge(forwardLatency) + pkt->headerDelay;

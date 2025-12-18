@@ -44,6 +44,8 @@ from gem5.components.boards.riscv_board import RiscvBoard
 from gem5.components.cachehierarchies.classic.private_l1_private_l2_walk_cache_hierarchy import (
     PrivateL1PrivateL2WalkCacheHierarchy,
 )
+from gem5.components.cachehierarchies.classic.private_l1_private_l2_shared_l3_cache_hierarchy import(
+    PrivateL1PrivateL2SharedL3CacheHierarchy,)
 from gem5.components.memory import SingleChannelDDR3_1600
 from gem5.components.processors.cpu_types import CPUTypes
 from gem5.components.processors.simple_processor import SimpleProcessor
@@ -81,9 +83,19 @@ requires(isa_required=ISA.RISCV)
 # Setup the cache hierarchy.
 # For classic, PrivateL1PrivateL2 and NoCache have been tested.
 # For Ruby, MESI_Two_Level and MI_example have been tested.
-cache_hierarchy = PrivateL1PrivateL2WalkCacheHierarchy(
-    l1d_size="32KiB", l1i_size="32KiB", l2_size="512KiB"
-)
+
+# cache_hierarchy = PrivateL1PrivateL2WalkCacheHierarchy(
+#     l1d_size="32KiB", l1i_size="32KiB", l2_size="512KiB"
+# )
+cache_hierarchy = PrivateL1PrivateL2SharedL3CacheHierarchy(
+        l1i_size= "32KiB",
+        l1i_assoc= 8,
+        l1d_size= "32KiB",
+        l1d_assoc= 8,
+        l2_size= "512KiB",
+        l2_assoc= 8,
+        l3_size= "2MiB",
+        l3_assoc= 16,)
 
 # Setup the system memory.
 memory = SingleChannelDDR3_1600()
