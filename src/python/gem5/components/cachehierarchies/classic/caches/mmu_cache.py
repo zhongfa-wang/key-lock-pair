@@ -51,6 +51,8 @@ class MMUCache(Cache):
         mshrs: int = 20,
         tgts_per_mshr: int = 12,
         writeback_clean: bool = True,
+        # [klp] Adding CacheLevel parameter
+        cache_level = 'TLB'
     ):
         super().__init__()
         self.size = size
@@ -61,3 +63,5 @@ class MMUCache(Cache):
         self.mshrs = mshrs
         self.tgts_per_mshr = tgts_per_mshr
         self.writeback_clean = writeback_clean
+        # [klp] Adding CacheLevel parameter
+        self.cache_level = cache_level
