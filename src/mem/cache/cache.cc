@@ -62,6 +62,10 @@
 #include "mem/cache/write_queue_entry.hh"
 #include "mem/request.hh"
 #include "params/Cache.hh"
+// [klp] {
+#include "enums/CacheLevel.hh"
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -410,7 +414,38 @@ Cache::handleTimingReqMiss(PacketPtr pkt, CacheBlk *blk, Tick forward_time,
         // MSHR) this is set to null
         pkt = pf;
     }
-
+    // [klp] {
+    /* The current implementation protects only L1D. */
+    if (cache_level == enums::CacheLevel::L1D){
+      /* If the packet is made by a speculative load, response core and make the request to the lower cache.*/
+      if (!pkt->isUnCondiReExe() && pkt->isRead()){
+        assert(pkt->needsResponse());
+        assert(pkt->req->hasPaddr());
+        assert(!pkt->req->isUncacheable());
+        PacketPtr pf = nullptr;
+        /* Make a copy of the pkt for the convenience of the next swpf when MSHR misses. */
+        if(!mshr){
+          RequestPtr req = std::make_shared<Request>(pkt->req->getPaddr(),
+                                                  pkt->req->getSize(),
+                                                  pkt->req->getFlags(),
+                                                  pkt->req->requestorId());
+          /* The request made to the lower cache is done by a software prefetch. */
+          MemCmd prefetchCmd = MemCmd::SoftPFReq;
+          pf = new Packet(req, prefetchCmd);
+          pf->allocate();
+          assert(pf->matchAddr(pkt));
+          assert(pf->getSize() == pkt->getSize());
+        }
+        pkt->makeTimingResponse();
+        /* Tell the core that the tag verification failed. */
+        pkt->setPassSecTagVeri(gem5::triStateVal::FALSE);
+        cpuSidePort.schedTimingResp(pkt, request_time);
+        pkt = pf;
+        DPRINTF(KLPDEBUG, "Miss on L1D. Sending control pkt back to the core and swpf to lower caches: pkt obj addr: %x.\n",
+                pkt); 
+      }
+    }
+    // } [klp]
     BaseCache::handleTimingReqMiss(pkt, mshr, blk, forward_time, request_time);
 }
 

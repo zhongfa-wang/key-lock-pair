@@ -45,6 +45,8 @@
 #include <vector>
 
 #include "base/logging.hh"
+#include "base/trace.hh"
+#include "base/types.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/fu_pool.hh"
 #include "cpu/o3/limits.hh"
@@ -52,6 +54,9 @@
 #include "enums/OpClass.hh"
 #include "params/BaseO3CPU.hh"
 #include "sim/core.hh"
+// [klp] {
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 // clang complains about std::set being overloaded with Packet::set if
 // we open up the entire namespace std
@@ -770,6 +775,26 @@ InstructionQueue::scheduleReadyInsts()
     // This will avoid trying to schedule a certain op class if there are no
     // FUs that handle it.
     int total_issued = 0;
+    // [klp] {
+    auto it_uncondi = fromCommit->instsToReExec.begin();
+    auto it_uncondi_end = fromCommit->instsToReExec.end();
+    while(total_issued < totalWidth && fromCommit->instsToReExec.size() != 0 
+          && it_uncondi != it_uncondi_end){
+            assert(it_uncondi->get() != nullptr && "Instruction pointer is null!");
+            assert(it_uncondi->get()->getUncondiState() == gem5::triStateVal::TRUE &&
+                   it_uncondi->get()->isLoad() /* &&
+                   it_uncondi->get()->getPassTagVeriDynInstCarrier() == gem5::triStateVal::FALSE */);
+            // it_uncondi->get()->setPassTagVeriDynInstCarrier(gem5::triStateVal::INIT);
+            assert(it_uncondi->get()->isSent2IEW4ReExe);
+            addIfReady(it_uncondi->get());
+            DPRINTF(KLPDEBUG, "Reexecuting inst. Adding it to the readyList. Inst addr: %x, inst assembly: %x, unconditiona state: %s.\n",
+                    it_uncondi->get()->pcState().instAddr(),
+                    it_uncondi->get()->staticInst->disassemble(it_uncondi->get()->pcState().instAddr()),
+                    it_uncondi->get()->getUncondiState()
+                    );
+            ++it_uncondi;
+    }
+    // } [klp]
     ListOrderIt order_it = listOrder.begin();
     ListOrderIt order_end_it = listOrder.end();
 
@@ -890,6 +915,11 @@ InstructionQueue::scheduleReadyInsts()
 
             if (issuing_inst->firstIssue == -1)
                 issuing_inst->firstIssue = curTick();
+            // [klp] {
+            /* Update stats */
+            if (issuing_inst->getUncondiState() == gem5::triStateVal::TRUE)
+                issuing_inst->firstIssue = curTick();
+            // } [klp]
 
             if (!issuing_inst->isMemRef()) {
                 // Memory instructions can not be freed from the IQ until they

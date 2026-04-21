@@ -88,7 +88,53 @@ def LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
     # Make sure flags are in lists (convert to lists if not).
     mem_flags = makeList(mem_flags)
     inst_flags = makeList(inst_flags)
+    # [klp] {
 
+    secure_tag_gen_code_load = ''';\n
+    uint64_t stRegVal = this->genSecTagFramePC(xc, sp);
+    xc->setSecTagInDynInst(stRegVal);
+    '''
+    # secure_tag_gen_code_load = ''';\n [klpscrapped]: stop using st reg
+    # uint64_t stRegVal = this->genSecTagFramePC(xc, sp);
+    # xc->setRegOperand(this, 1, stRegVal);
+    # '''
+
+    secure_tag_gen_code_pref = ''';\n
+    uint64_t stRegVal = this->genSecTagFramePC(xc, sp);
+    xc->setSecTagInDynInst(stRegVal);
+    '''
+    # secure_tag_gen_code_pref = ''';\n [klp]: stop using st reg
+    # uint64_t stRegVal = this->genSecTagFramePC(xc, sp);
+    # xc->setRegOperand(this, 0, stRegVal);
+    # '''
+
+    secure_tag_gen_code_store = ''';\n
+    uint64_t stRegVal = this->genSecTagFramePC(xc, sp);
+    xc->setSecTagInDynInst(stRegVal);
+    '''
+    # secure_tag_gen_code_store = ''';\n [klp]: stop using st reg
+    # St = this->genSecTagFramePC(xc, sp);
+    # '''
+
+    base_class_l = base_class.lower()
+    name_l = name.lower()
+    if 'load' in base_class_l and not 'prefetch' in name_l:
+        ea_code = f"//{base_class_l}: Generating security tag for loads!\n" \
+                    + secure_tag_gen_code_load + ea_code 
+    elif 'store' in base_class_l and not 'cbo' in name_l:
+        ea_code = f"//{base_class_l}: Generating security tag for stores!\n" + \
+                    secure_tag_gen_code_store + ea_code 
+    elif 'prefetch' in name_l:
+        ea_code = f"//{name_l}: Generating security tag for prefetches!\n" + \
+                    secure_tag_gen_code_pref + ea_code 
+    ea_code += "\n"
+
+    dst_reg_binding_dummy_code = ''';\n
+     if (false) { St = 0x0; } [klp]: stop using st reg
+    '''
+    # memacc_code += dst_reg_binding_dummy_code
+
+    # } [klp]
     iop = InstObjParams(name, Name, base_class,
         {'offset_code': offset_code, 'ea_code': ea_code,
          'memacc_code': memacc_code, 'postacc_code': postacc_code },

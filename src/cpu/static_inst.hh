@@ -293,6 +293,12 @@ class StaticInst : public RefCounted, public StaticInstFlags
 
     virtual Fault execute(ExecContext *xc,
             trace::InstRecord *traceData) const = 0;
+            
+    // [klp] {
+    uint64_t hashing(uint64_t val1, uint64_t val2) const;
+    // Generate security tag return a uint32_t value
+    uint64_t genSecTagFramePC(ExecContext *xc, uint64_t spRegVal) const;
+    // } [klp]
 
     virtual Fault
     initiateAcc(ExecContext *xc, trace::InstRecord *traceData) const

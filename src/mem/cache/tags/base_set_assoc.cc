@@ -45,6 +45,8 @@
 
 #include "mem/cache/tags/base_set_assoc.hh"
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 
 #include "base/intmath.hh"
@@ -57,6 +59,11 @@ BaseSetAssoc::BaseSetAssoc(const Params &p)
      sequentialAccess(p.sequential_access),
      replacementPolicy(p.replacement_policy)
 {
+    // [klp] {
+    for(auto& blk : blks){
+      blk.initSecTagValidBits(p.block_size/p.tag_granularity);
+    }
+    // } [klp]
     // There must be a indexing policy
     fatal_if(!p.indexing_policy, "An indexing policy is required");
 
@@ -79,7 +86,11 @@ BaseSetAssoc::tagsInit()
 
         // Associate a data chunk to the block
         blk->data = &dataBlks[blkSize*blk_index];
-
+        // [klp] {
+        /* Associate a lock to the block. blkSize/tag_granularity is the num
+        of granules in a block.*/
+        blk->secTagPtrInCache = &secTagArrInCache[blk_index*(blkSize/tag_granularity)];
+        // } [klp]
         // Associate a replacement data entry to the block
         blk->replacementData = replacementPolicy->instantiateEntry();
 

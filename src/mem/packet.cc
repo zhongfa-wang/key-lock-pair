@@ -56,8 +56,12 @@
 #include "base/cprintf.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
+#include "cpu/o3/dyn_inst_ptr.hh"
 #include "mem/packet_access.hh"
 #include "sim/bufval.hh"
+// [klp] {
+#include "base/types.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -238,6 +242,19 @@ MemCmd::commandInfo[] =
     { {IsRead, IsRequest}, InvalidCmd, "HTMAbort" },
     { {IsRequest}, InvalidCmd, "TlbiExtSync" },
 };
+
+// [klp] {
+bool 
+Packet::passSecTagVeri(){
+  /* True = passed. False = not passed. */
+  if(this->isRead())
+    assert(passSecTagVeriPktCarrier != gem5::triStateVal::INIT); // Make sure all packets carry the results
+  if(passSecTagVeriPktCarrier == gem5::triStateVal::TRUE)
+    return true;
+  else
+    return false;
+}
+// } [klp]
 
 AddrRange
 Packet::getAddrRange() const

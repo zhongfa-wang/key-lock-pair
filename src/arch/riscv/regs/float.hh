@@ -152,7 +152,9 @@ enum : RegIndex
     _Ft9Idx,
     _Ft10Idx,
     _Ft11Idx,
-
+    // [klp] {
+      _StIdx, // Security tag (st) register in float reg class
+    // } [klp]
     NumRegs
 };
 

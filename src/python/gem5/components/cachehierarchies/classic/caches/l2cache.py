@@ -53,19 +53,30 @@ class L2Cache(Cache):
         writeback_clean: bool = False,
         clusivity: Clusivity = "mostly_incl",
         PrefetcherCls: Type[BasePrefetcher] = StridePrefetcher,
-        # [klp] Adding CacheLevel parameter
-        cache_level = 'L2'
+        # [klp] {
+        # Adding CacheLevel parameter
+        cache_level = 'L2',
+        tag_width: int = 4,
+        tag_pos: int = 4,
+        tag_granularity: int = 16
+        # } [klp]
     ):
         super().__init__()
-        self.size = size
-        self.assoc = assoc
-        self.tag_latency = tag_latency
-        self.data_latency = data_latency
+        self.size             = size
+        self.assoc            = assoc
+        self.tag_latency      = tag_latency
+        self.data_latency     = data_latency
         self.response_latency = response_latency
-        self.mshrs = mshrs
-        self.tgts_per_mshr = tgts_per_mshr
-        self.writeback_clean = writeback_clean
-        self.clusivity = clusivity
-        self.prefetcher = PrefetcherCls()
-        # [klp] Adding CacheLevel parameter
-        self.cache_level = cache_level
+        self.mshrs            = mshrs
+        self.tgts_per_mshr    = tgts_per_mshr
+        self.writeback_clean  = writeback_clean
+        self.clusivity        = clusivity
+        self.prefetcher       = PrefetcherCls()
+        # [klp] {
+        # Parameter binding
+        self.cache_level      = cache_level
+        self.tag_width        = tag_width
+        self.tag_pos          = tag_pos
+        self.tag_granularity  = tag_granularity
+        # } [klp]
+

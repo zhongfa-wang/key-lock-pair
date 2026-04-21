@@ -47,6 +47,7 @@
 #define __MEM_CACHE_CACHE_BLK_HH__
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <iosfwd>
 #include <limits>
@@ -102,6 +103,11 @@ class CacheBlk : public TaggedEntry
      * referenced by this block.
      */
     uint8_t *data = nullptr;
+    // [klp] {
+    uint64_t *secTagPtrInCache = nullptr; // Points to the first lock of the block.
+    std::vector<bool> secTagValidBitsInCache;
+    void initSecTagValidBits(uint8_t granuleNum){secTagValidBitsInCache.assign(granuleNum, false);}
+    // } [klp]
 
     /**
      * Which curTick() will this block be accessible. Its value is only
@@ -157,6 +163,31 @@ class CacheBlk : public TaggedEntry
     {
         invalidate();
     }
+    // [klp] {
+    /* Invalidate the nth secure tag. */
+    void invalidateSecTag(int nth)
+    {
+      assert(nth < secTagValidBitsInCache.size());
+      secTagValidBitsInCache[nth] = false;
+    }
+    /* Invalidate all secure tags of this block. */
+    void invalidateSecTag()
+    {
+      secTagValidBitsInCache.assign(secTagValidBitsInCache.size(),false);
+    }
+    /* Set the sec tag valid bit as valid. */
+    void setSecTagValid(int nth)
+    {
+      assert(nth < secTagValidBitsInCache.size());
+      secTagValidBitsInCache[nth] = true;
+    }
+    // /* Candidate constructor that initializes sec tag valid bits. */
+    // CacheBlk(int bitsNum) : TaggedEntry(),
+    // secTagValidBitsInCache(bitsNum,false)
+    // {
+    //     invalidate();
+    // }
+    // } [klp]
 
     CacheBlk(const CacheBlk&) = delete;
     CacheBlk& operator=(const CacheBlk&) = delete;
@@ -212,6 +243,9 @@ class CacheBlk : public TaggedEntry
         setRefCount(0);
         setSrcRequestorId(Request::invldRequestorId);
         lockList.clear();
+        // [klp] {
+        invalidateSecTag();
+        // } [klp]
     }
 
     /**

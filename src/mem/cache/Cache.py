@@ -76,9 +76,10 @@ class WriteAllocator(SimObject):
 
     block_size = Param.Int(Parent.cache_line_size, "block size in bytes")
 
-# [klp] Define enum type of cache level
+# [klp] Define enum type of cache level {
 class CacheLevel(Enum):
     vals = ['L1I','L1D','L2','L3','TLB','OTHERS']
+# } [klp]
 
 class BaseCache(ClockedObject):
     type = "BaseCache"
@@ -86,8 +87,12 @@ class BaseCache(ClockedObject):
     cxx_header = "mem/cache/base.hh"
     cxx_class = "gem5::BaseCache"
 
-    # [klp] Add the cache_level parameter to class BaseCache
-    cache_level = Param.CacheLevel("Cache level")
+    # [klp] Add the parameters to class BaseCache {
+    cache_level     = Param.CacheLevel("Cache level")
+    tag_width       = Param.UInt64(4, "Tag width, no more than 31. The c_flwsp is hard coded as using sp_uw (32 bits). The length of the tag width shouldn't be larger than that. The MSB bit is meta data. ")
+    tag_pos         = Param.UInt64(4, "Tag position. Controlling on which bit from LSB of the hashing result register starts the tag. ")
+    tag_granularity = Param.UInt64(16, "The granularity of tags. One key per 16 Bytes by default. The blkSize should be divisible by this number. ")
+    # } [klp]
 
     size = Param.MemorySize("Capacity")
     assoc = Param.Unsigned("Associativity")

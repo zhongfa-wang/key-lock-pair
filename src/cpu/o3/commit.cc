@@ -48,11 +48,15 @@
 #include "base/compiler.hh"
 #include "base/loader/symtab.hh"
 #include "base/logging.hh"
+#include "base/stats/units.hh"
+#include "base/trace.hh"
+#include "base/types.hh"
 #include "cpu/base.hh"
 #include "cpu/checker/cpu.hh"
 #include "cpu/exetrace.hh"
 #include "cpu/o3/cpu.hh"
 #include "cpu/o3/dyn_inst.hh"
+#include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/limits.hh"
 #include "cpu/o3/thread_state.hh"
 #include "cpu/timebuf.hh"
@@ -66,6 +70,9 @@
 #include "params/BaseO3CPU.hh"
 #include "sim/faults.hh"
 #include "sim/full_system.hh"
+// [klp] {
+#include "debug/KLPDEBUG.hh"
+// } [klp]  
 
 namespace gem5
 {
@@ -149,6 +156,12 @@ Commit::CommitStats::CommitStats(CPU *cpu, Commit *commit)
     : statistics::Group(cpu, "commit"),
       ADD_STAT(commitSquashedInsts, statistics::units::Count::get(),
                "The number of squashed insts skipped by commit"),
+      // [klp] {
+      ADD_STAT(tagVeriCorrect,statistics::units::Count::get(),
+               "The number of correct tag verification"),
+      ADD_STAT(tagVeriNotCorrect,statistics::units::Count::get(),
+               "The number of wrong tag verification"),
+      // [klp] }
       ADD_STAT(commitNonSpecStalls, statistics::units::Count::get(),
                "The number of times commit has been forced to stall to "
                "communicate backwards"),
@@ -837,6 +850,9 @@ Commit::commit()
         // If we're not currently squashing, then get instructions.
         getInsts();
 
+        // [klp] {
+        resolveInstsByThreatModel();
+        // } [klp]
         // Try to commit any instructions.
         commitInsts();
     }
@@ -873,6 +889,36 @@ Commit::commit()
     }
 }
 
+// [klp] {
+/* void
+Commit::resolveInstsByThreatModel(DynInstPtr head_inst, ThreadID tid){
+  if(cpu->getParaThreatModel() == std::string("spectre")){
+    if(!head_inst->mispredicted()) {
+      rob->updateInstsToReExec(toIEW->instsToReExec, head_inst, tid);
+      wroteToTimeBuffer = true;
+    }
+  }
+  if(cpu->getParaThreatModel() == std::string("futuristic")){
+    if(head_inst->isSent2IEW4ReExe == false && head_inst->isLoad()){
+      head_inst->isSent2IEW4ReExe = true;
+      toIEW->instsToReExec.push_back(head_inst);
+      wroteToTimeBuffer = true;
+    }
+  }
+} */
+void
+Commit::resolveInstsByThreatModel(){
+  ThreadID commit_thread = getCommittingThread();
+  if(rob->isEmpty() || commit_thread == -1)
+    return;
+
+  DynInstPtr head_inst = rob->readHeadInst(commit_thread);
+  ThreadID tid = head_inst->threadNumber;
+  wroteToTimeBuffer = rob->updateInstsToReExec(toIEW->instsToReExec, 
+                                                head_inst, tid, cpu->getParaThreatModel(),
+                                                commitWidth);
+  }
+// } [klp]
 void
 Commit::commitInsts()
 {
@@ -1094,7 +1140,11 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
 
     // If the instruction is not executed yet, then it will need extra
     // handling.  Signal backwards that it should be executed.
-    if (!head_inst->isExecuted()) {
+    /* [klp] This block deals with the non-speculative/strict order instructions.
+    Those insts feature isExecuted== false. But the loads with tag verification failure
+    also features isExecuted == false. Hence needs to rule those loads with tag 
+    verification failure out from this block.*/
+    if (!head_inst->isExecuted() && head_inst->getPassTagVeriDynInstCarrier() != gem5::triStateVal::FALSE) {
         // Make sure we are only trying to commit un-executed instructions we
         // think are possible.
         assert(head_inst->isNonSpeculative() || head_inst->isStoreConditional()

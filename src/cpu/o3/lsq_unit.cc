@@ -40,9 +40,12 @@
  */
 
 #include "cpu/o3/lsq_unit.hh"
+#include <cassert>
 
 #include "arch/generic/debugfaults.hh"
 #include "base/str.hh"
+#include "base/trace.hh"
+#include "base/types.hh"
 #include "cpu/checker/cpu.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/limits.hh"
@@ -54,12 +57,32 @@
 #include "debug/O3PipeView.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
+// [klp] {
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
 
 namespace o3
 {
+// [klp] {
+void 
+LSQUnit::assertWrongCasesB4WB(const DynInstPtr inst, const PacketPtr pkt) const {
+  assert(!( !inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt)                           &&
+         !( !inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt && !pkt->passSecTagVeri()) &&
+         !( !inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt && !pkt->passSecTagVeri())
+        );
+}
+
+void
+LSQUnit::assertRightCasesB4WB(const DynInstPtr inst, const PacketPtr pkt) const {
+  assert( (!inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt &&  pkt->passSecTagVeri()) ||
+          ( inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt)                           || 
+          ( inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt &&  pkt->passSecTagVeri())
+  );
+}
+// } [klp]
 
 LSQUnit::WritebackEvent::WritebackEvent(const DynInstPtr &_inst,
         PacketPtr _pkt, LSQUnit *lsq_ptr)
@@ -94,6 +117,17 @@ LSQUnit::recvTimingResp(PacketPtr pkt)
     LSQRequest *request = dynamic_cast<LSQRequest*>(pkt->senderState);
     assert(request != nullptr);
     bool ret = true;
+    // [klp] {
+    DPRINTF(KLPDEBUG, "Received a pkt. Inst assembly: %s, inst VA: %x, req uncondi state: %s, target VA: %x.\n",
+                      request->instruction()->staticInst->disassemble(request->instruction()->pcState().instAddr()),
+                      request->instruction()->pcState().instAddr(),
+                      request->unCondiState == gem5::triStateVal::TRUE? "True" : "False",
+                      request->getVaddr());
+    if(loadQueue[request->instruction()->lqIdx].isUsingUncondiReq &&
+       !request->unCondiState){
+       return true;  
+    }
+    // } [klp]
     /* Check that the request is still alive before any further action. */
     if (!request->isReleased()) {
         ret = request->recvTimingResp(pkt);
@@ -161,6 +195,22 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
     }
 
     cpu->ppDataAccessComplete->notify(std::make_pair(inst, pkt));
+
+    // [klp] {
+    if (inst->isLoad()) {
+      assertWrongCasesB4WB(inst, pkt);
+      assertRightCasesB4WB(inst, pkt);
+
+      inst->setPassTagVeriDynInstCarrier(pkt->getPassSecTagVeri());
+      if (inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt && !pkt->passSecTagVeri()){
+        return;
+      }
+      DPRINTF(KLPDEBUG,"The load key verification failed, sending it to commit. Inst va: %x, Inst assembly: %s, unconditional state: %s.\n",
+              inst->pcState().instAddr(),
+              inst->staticInst->disassemble(inst->pcState().instAddr(),0),
+              (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False");
+    }
+    // } [klp]
 
     assert(!cpu->switchedOut());
     if (!inst->isSquashed()) {
@@ -608,6 +658,11 @@ LSQUnit::executeLoad(const DynInstPtr &inst)
     }
 
     load_fault = inst->initiateAcc();
+
+    // [klp] {
+    if (inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt)
+      return NoFault;
+    // } [klp]
 
     if (load_fault == NoFault && !inst->readMemAccPredicate()) {
         assert(inst->readPredicate());
@@ -1329,7 +1384,17 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
     LQEntry& load_entry = loadQueue[load_idx];
     const DynInstPtr& load_inst = load_entry.instruction();
 
+    // [klp] {
+    if(request->unCondiState == gem5::triStateVal::FALSE){
     load_entry.setRequest(request);
+    load_entry.isUsingUncondiReq = false;
+    }
+    if(request->unCondiState == gem5::triStateVal::TRUE){
+      load_entry.setUncondiRequest(request);
+      assert(load_entry.isUsingUncondiReq == false);
+      load_entry.isUsingUncondiReq = true;
+    }
+    // } [klp]
     assert(load_inst);
 
     assert(!load_inst->isExecuted());
@@ -1519,7 +1584,26 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
                     // This may happen if the store was not complete the
                     // first time this load got executed. Signal the senderSate
                     // that response packets should be discarded.
+                    // [klp] {
+                    /* Marking the this lsqreq is discarded. */
+                    if(request->isUnConditional()) {
+                      load_inst->uncondiLsqreqDel = true;
+                    } else {
+                      load_inst->specLsqreqDel = true;
+                    }
+                    // } [klp]
                     request->discard();
+                    // [klp] {
+                    /* Delete the other LSQRequest if it existed and has
+                    not been deleted. */
+                      /* Only under true | true | true are there two LSQRequests. */
+                    if(load_inst->specLsqreqBuilt && load_inst->uncondiLsqreqBuilt && load_inst->isUncondi()){
+                      if( request->isUnConditional() && !load_inst->specLsqreqDel)
+                        load_inst->savedRequest->discard();
+                      if(!request->isUnConditional() && !load_inst->uncondiLsqreqDel)
+                        load_inst->savedRequest_uncondi->discard();
+                    }
+                    // } [klp]
                     // Avoid checking snoops on this discarded request.
                     load_entry.setRequest(nullptr);
                 }
@@ -1558,6 +1642,13 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
 
                 // Tell IQ/mem dep unit that this instruction will need to be
                 // rescheduled eventually
+                // [klp] {
+                /* Update the flags for the convenience for the next re-execution's
+                pushRequest function choosing which LSQRequest ptr to use. */
+                request->isUnConditional()? 
+                loadQueue[stallingLoadIdx].instruction()->reExeUncondiLsqreq = true:
+                loadQueue[stallingLoadIdx].instruction()->reExeLsqreq = true;
+                // } [klp]
                 iewStage->rescheduleMemInst(load_inst);
                 load_inst->clearIssued();
                 load_inst->effAddrValid(false);

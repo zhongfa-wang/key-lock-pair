@@ -44,12 +44,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <deque>
 #include <list>
 #include <string>
 
 #include "base/refcnt.hh"
 #include "base/trace.hh"
+#include "base/types.hh"
 #include "cpu/checker/cpu.hh"
 #include "cpu/exec_context.hh"
 #include "cpu/exetrace.hh"
@@ -347,6 +349,51 @@ class DynInst : public ExecContext, public RefCounted
 
     /** Pointer to the data for the memory access. */
     uint8_t *memData = nullptr;
+    // [klp] {
+    private:
+
+    /* A two-bit flag carried by a Dyninst reflecting the tag verification result
+    TRUE-pass, FALSE-not pass, INIT-initial, no set. */
+    triStateVal passTagVeriDynInstCarrier = gem5::triStateVal::INIT;
+    
+    /* Actually this hasn't to be a triStateVal. But making it a bool leads ambiguous 
+    problem in Packet's constructor. Hence making it as follow. Only using the TRUE 
+    and FALSE state. The value is initialized to FALSE, indicating that all instructions
+    are regarded as speculative until they can be regarded as non-speculative.*/
+    triStateVal unCondiStateInst = gem5::triStateVal::FALSE;
+
+    public:
+    /* The flag indicating that the inst should be executed unconditionally. 
+    Used in commit stage in case of repeatedly sending an inst to IEW.*/
+    bool isSent2IEW4ReExe = false;
+
+    triStateVal getPassTagVeriDynInstCarrier() const {return passTagVeriDynInstCarrier;}
+    void setPassTagVeriDynInstCarrier(triStateVal veriResult) {passTagVeriDynInstCarrier = veriResult;}
+
+    triStateVal getUncondiState() const {return unCondiStateInst;}
+    void setUncondiState(triStateVal flagVal) {unCondiStateInst = flagVal;}
+
+    bool isUncondi() {return unCondiStateInst == gem5::triStateVal::TRUE;}
+
+    /* A load might correspond to two LSQRequests. The following two bools marks whether 
+    they are constructed.*/
+    bool specLsqreqBuilt = false;
+    bool uncondiLsqreqBuilt = false;
+    /* LSQ::pushRequest may be called on the first attempt to make a request to cache, or
+    on a re-exection of making the request. The following two bools distinguishes the first 
+    attempt against the re-exection.*/
+    bool reExeLsqreq = false;
+    bool reExeUncondiLsqreq = false;
+    /* Pointer that holds the uncondi LSQRequest */
+    LSQ::LSQRequest *savedRequest_uncondi = nullptr;
+    /* Mark whether the request is discarded when there's in flight pkt but the core finds 
+    out that there should be a STLF. In klp, one DynInst manages two LSQRequests. Needs 
+    additional flags to deal with the condition that only one of them is get managed in 
+    the LSQUnit::read function but the other is not. Can't naively delete the other one 
+    in the LSQUnit::read function, which might cause deleting twice problem. */
+    bool specLsqreqDel = false;
+    bool uncondiLsqreqDel = false;
+    // } [klp]
 
     /** Load queue index. */
     ssize_t lqIdx = -1;
@@ -1144,7 +1191,25 @@ class DynInst : public ExecContext, public RefCounted
             return;
         cpu->getReg(reg, val, threadNumber);
     }
+    // [klp] {
+    RegVal
+    getDestRegVal(const StaticInst *si, int idx)
+    {
+        const PhysRegIdPtr reg = renamedDestIdx(idx);
+        if (reg->is(InvalidRegClass))
+            return 0;
+        return cpu->getReg(reg, threadNumber);
+    }
 
+    void
+    getDestRegVal(const StaticInst *si, int idx, void *val)
+    {
+        const PhysRegIdPtr reg = renamedDestIdx(idx);
+        if (reg->is(InvalidRegClass))
+            return;
+        cpu->getReg(reg, val, threadNumber);
+    }
+    // } [klp]
     void *
     getWritableRegOperand(const StaticInst *si, int idx) override
     {

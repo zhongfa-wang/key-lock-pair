@@ -76,6 +76,13 @@ class LSQUnit;
 class LSQ
 {
   public:
+    // [klp] {
+    void assertWrongCasesB4GetLsqreqPtr(const DynInstPtr& inst) const;
+    void assertRightCasesB4GetLsqreqPtr(const DynInstPtr& inst) const;
+    void assertWrongCasesB4NewLsqreq(const DynInstPtr& inst) const;
+    void assertRightCasesB4NewLsqreq(const DynInstPtr& inst) const;
+    // } [klp]
+
     class LSQRequest;
 
     /**
@@ -288,6 +295,15 @@ class LSQ
         uint32_t _numOutstandingPackets;
         AtomicOpFunctorPtr _amo_op;
         bool _hasStaleTranslation;
+        // [klp] {
+        // triStateVal unCondiState = gem5::triStateVal::FALSE;// moved to Packet::SenderState
+        
+        /* Install the uncondi request in LQ.
+        Only loads are distinguished as uncondi. */
+        void install_uncondi_lsqreq_in_lsqentry();
+        bool isUnConditional() const {return unCondiState == gem5::triStateVal::TRUE;}
+        // } [klp]
+
 
       protected:
         LSQUnit* lsqUnit() { return &_port; }
@@ -388,7 +404,6 @@ class LSQ
         }
 
         uint32_t taskId() const { return _taskId; }
-
         RequestPtr req(int idx = 0) { return _reqs.at(idx); }
         const RequestPtr req(int idx = 0) const { return _reqs.at(idx); }
 
@@ -648,6 +663,11 @@ class LSQ
         uint32_t numReceivedPackets;
         RequestPtr _mainReq;
         PacketPtr _mainPacket;
+        // [klp] {
+        /* Indicating whether all sub pkts pass the tag verification.*/
+        RequestPtr _mainReq_uncondi;
+        triStateVal mainPktPassTagVeriState = gem5::triStateVal::TRUE;
+        // } [klp]
 
       public:
         SplitDataRequest(LSQUnit* port, const DynInstPtr& inst,

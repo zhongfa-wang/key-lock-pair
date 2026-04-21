@@ -23,6 +23,7 @@ from .caches.l1icache import L1ICache
 from .caches.l2cache import L2Cache
 from .caches.l3cache import L3Cache
 from .caches.mmu_cache import MMUCache
+from m5.params import *
 
 
 class PrivateL1PrivateL2SharedL3CacheHierarchy(
@@ -51,6 +52,11 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
 
     def __init__(
         self,
+        # [klp] {
+        tag_width: int,
+        tag_pos: int,
+        tag_granularity: int,
+        # } [klp]
         l1d_size: str,
         l1i_size: str,
         l2_size: str,
@@ -65,16 +71,21 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         AbstractClassicCacheHierarchy.__init__(self=self)
         AbstractThreeLevelCacheHierarchy.__init__(
             self,
-            l1i_size=l1i_size,
-            l1i_assoc=l1i_assoc,
-            l1d_size=l1d_size,
-            l1d_assoc=l1d_assoc,
-            l2_size=l2_size,
-            l2_assoc=l2_assoc,
-            l3_size=l3_size,
-            l3_assoc=l3_assoc
+            l1i_size  = l1i_size,
+            l1i_assoc = l1i_assoc,
+            l1d_size  = l1d_size,
+            l1d_assoc = l1d_assoc,
+            l2_size   = l2_size,
+            l2_assoc  = l2_assoc,
+            l3_size   = l3_size,
+            l3_assoc  = l3_assoc
 
         )
+        # [klp] {
+        self._tag_width       = tag_width
+        self._tag_pos         = tag_pos
+        self._tag_granularity = tag_granularity
+        # } [klp]
 
         self.membus = membus if membus else self._get_default_membus()
 
@@ -96,6 +107,11 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
 
         self.l1icaches = [
             L1ICache(
+                # [klp] {
+                tag_width       = self._tag_width,
+                tag_pos         = self._tag_pos,
+                tag_granularity = self._tag_granularity,
+                # } [klp]
                 size=self._l1i_size,
                 assoc=self._l1i_assoc,
                 writeback_clean=False,
@@ -103,11 +119,25 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
             for i in range(board.get_processor().get_num_cores())
         ]
         self.l1dcaches = [
-            L1DCache(size=self._l1d_size, assoc=self._l1d_assoc)
+            L1DCache(
+                # [klp] {
+                tag_width       = self._tag_width,
+                tag_pos         = self._tag_pos,
+                tag_granularity = self._tag_granularity,
+                # } [klp]
+                size=self._l1d_size, 
+                assoc=self._l1d_assoc)
             for i in range(board.get_processor().get_num_cores())
         ]
         self.l2caches = [
-            L2Cache(size=self._l2_size, assoc=self._l2_assoc)
+            L2Cache(
+                # [klp] {
+                tag_width       = self._tag_width,
+                tag_pos         = self._tag_pos,
+                tag_granularity = self._tag_granularity,
+                # } [klp]
+                size=self._l2_size, 
+                assoc=self._l2_assoc)
             for i in range(board.get_processor().get_num_cores())
         ]
         self.l2buses = [
@@ -116,15 +146,36 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         ]
         # self.l2cache = L2Cache(size=self._l2_size, assoc=self._l2_assoc)
         self.l3bus = L2XBar()
-        self.l3cache = L3Cache(size=self._l3_size,assoc=self._l3_assoc)
+        self.l3cache = L3Cache(
+                # [klp] {
+                tag_width       = self._tag_width,
+                tag_pos         = self._tag_pos,
+                tag_granularity = self._tag_granularity,
+                # } [klp]
+            size=self._l3_size,
+            assoc=self._l3_assoc)
         # ITLB Page walk caches
         self.iptw_caches = [
-            MMUCache(size="8KiB", writeback_clean=False)
+            MMUCache(
+                # [klp] {
+                tag_width       = self._tag_width,
+                tag_pos         = self._tag_pos,
+                tag_granularity = self._tag_granularity,
+                # } [klp]
+                size="8KiB", 
+                writeback_clean=False)
             for _ in range(board.get_processor().get_num_cores())
         ]
         # DTLB Page walk caches
         self.dptw_caches = [
-            MMUCache(size="8KiB", writeback_clean=False)
+            MMUCache(
+                # [klp] {
+                tag_width       = self._tag_width,
+                tag_pos         = self._tag_pos,
+                tag_granularity = self._tag_granularity,
+                # } [klp]
+                size="8KiB", 
+                writeback_clean=False)
             for _ in range(board.get_processor().get_num_cores())
         ]
 

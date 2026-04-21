@@ -43,11 +43,16 @@
 #include <list>
 
 #include "base/logging.hh"
+#include "base/trace.hh"
+#include "base/types.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/limits.hh"
 #include "debug/Fetch.hh"
 #include "debug/ROB.hh"
 #include "params/BaseO3CPU.hh"
+// [klp] {
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -122,6 +127,75 @@ ROB::name() const
 {
     return cpu->name() + ".rob";
 }
+
+// [klp] {
+bool 
+ROB::updateInstsToReExec(std::vector<DynInstPtr>& instsToReExec, 
+                        DynInstPtr head_inst, ThreadID tid, 
+                        std::string getParaThreatModel,
+                        unsigned commitWidth){
+  bool wroteToTimeBuffer = false;
+
+  if(cpu->getParaThreatModel() == std::string("spectre")){
+    if(!head_inst->mispredicted()){
+      #include <algorithm>
+      assert(!head_inst->mispredicted());
+      if(threadEntries[tid] != 0){
+        InstIt it = std::find(instList[tid].begin(), instList[tid].end(), head_inst);
+        if(it == instList[tid].end()){
+          return false;
+        }
+
+        if(it->get()->isControl())
+          ++it;
+
+        for( ; it != instList[tid].end(); ++it){
+          if(it->get()->isControl()){
+            break;
+          }
+          
+          if(it->get()->isLoad() && 
+             it->get()->getPassTagVeriDynInstCarrier() == gem5::triStateVal::FALSE && 
+             it->get()->isSent2IEW4ReExe == false && 
+             !it->get()->isNonSpeculative() &&
+             !it->get()->isSerializing()){
+    
+            it->get()->setUncondiState(gem5::triStateVal::TRUE);
+            it->get()->setPassTagVeriDynInstCarrier(gem5::triStateVal::INIT);
+            instsToReExec.push_back(it->get());
+            wroteToTimeBuffer = true;
+            it->get()->isSent2IEW4ReExe = true;
+            DPRINTF(KLPDEBUG,"Adding insts in ROB to re execution list. Inst addr: %x, seqNum: %d, inst assembly: %s, unconditional state: %s.\n",
+                    it->get()->pcState().instAddr(),
+                    it->get()->seqNum,
+                    it->get()->staticInst->disassemble(it->get()->pcState().instAddr(),0),
+                    it->get()->getUncondiState()==gem5::triStateVal::TRUE? "True":"False");
+          }
+        }
+      }
+    }
+  }
+  if(cpu->getParaThreatModel() == std::string("futuristic")){
+    unsigned resolvedNum = 0;
+    for(auto it=instList[tid].begin() ; 
+        it!=instList[tid].end() && resolvedNum < commitWidth;
+        ++it){
+
+      if(it->get()->isControl())
+        break;
+
+      if(!it->get()->isSent2IEW4ReExe && head_inst->isLoad()){
+        it->get()->isSent2IEW4ReExe = true;
+        instsToReExec.push_back(it->get());
+        wroteToTimeBuffer = true;
+      }
+      ++resolvedNum;
+    }
+  }
+
+  return wroteToTimeBuffer;
+}
+// } [klp]
 
 void
 ROB::setActiveThreads(std::list<ThreadID> *at_ptr)

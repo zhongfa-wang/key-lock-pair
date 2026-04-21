@@ -46,6 +46,9 @@
 #include "mem/cache/tags/base.hh"
 
 #include <cassert>
+#include <cstdint>
+#include <memory>
+#include <sys/types.h>
 
 #include "base/types.hh"
 #include "mem/cache/replacement_policies/replaceable_entry.hh"
@@ -60,7 +63,15 @@ namespace gem5
 {
 
 BaseTags::BaseTags(const Params &p)
-    : ClockedObject(p), blkSize(p.block_size), blkMask(blkSize - 1),
+    : ClockedObject(p), 
+      // [klp] { 
+      /* Every p.tag_granularity in a line has a sec tag. */
+      secTagArrInCache(p.size/p.tag_granularity),
+      /* The maximum width of tag is 63. I.e., tag_width <= 63.  */
+      tag_width(p.tag_width),
+      tag_granularity(p.tag_granularity),
+      // } [klp]
+      blkSize(p.block_size), blkMask(blkSize - 1),
       size(p.size), lookupLatency(p.tag_latency),
       system(p.system), indexingPolicy(p.indexing_policy),
       partitionManager(p.partitioning_manager),
@@ -71,6 +82,46 @@ BaseTags::BaseTags(const Params &p)
 {
     registerExitCallback([this]() { cleanupRefs(); });
 }
+
+// [klp] {
+bool 
+BaseTags::areSecTagsValidInCache(const CacheBlk *blk, int granuleNum, int startIdx)
+{
+  bool areAllSecTagsValid = true;
+  for(size_t i=startIdx; i<granuleNum; ++i)
+  {
+    areAllSecTagsValid = areAllSecTagsValid && blk->secTagValidBitsInCache[i];
+    DPRINTF(KLPDEBUG, "Checking secure tag's validity: blk obj: %x, index: %x, granule number: %x, \
+            validity: %s.\n",
+            blk,
+            i,
+            granuleNum,
+            blk->secTagValidBitsInCache[i]?"true":"false");
+  }
+  DPRINTF(KLPDEBUG, "The result of the validity check of blk %x is %s",
+          blk,
+          areAllSecTagsValid?"true":"false");
+  return areAllSecTagsValid;
+}
+
+/* Store the sec tag value in cache and set it as valid.*/
+void 
+BaseTags::setSecTagInCache(const PacketPtr pkt, uint64_t tag_granularity, uint64_t val) {
+  /* Setting sec tags always happens when an unconditional req
+  hit the L1D cache hence no need to check if the blk is valid.*/
+  CacheBlk *blk = findBlock({pkt->getAddr(), pkt->isSecure()});
+  int startIdx = extractBlkOffset(pkt->getAddr()) / tag_granularity;
+  unsigned granuleNumOfReq = gem5::divCeil(pkt->getSize(), tag_granularity);
+  assert(granuleNumOfReq <= (blkSize/tag_granularity));
+  assert(startIdx < granuleNumOfReq);
+  
+  for(size_t i=startIdx ; i<granuleNumOfReq ; ++i) {
+    blk->secTagPtrInCache[i] = val;
+    blk->setSecTagValid(i);
+  }
+
+}
+// } [klp]
 
 ReplaceableEntry*
 BaseTags::findBlockBySetAndWay(int set, int way) const

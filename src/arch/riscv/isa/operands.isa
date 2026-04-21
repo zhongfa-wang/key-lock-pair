@@ -98,6 +98,9 @@ def operands {{
     'Vs1': VecRegOp('vc', 'VS1', 'IsVector', 2),
     'Vs2': VecRegOp('vc', 'VS2', 'IsVector', 3),
     'Vs3': VecRegOp('vc', 'VS3', 'IsVector', 4),
+    # [klp] {
+    'St': IntReg('ud', 'SecurityTagReg', 'IsInteger', 21),
+    # } [klp]
 
 #Memory Operand
     'Mem': MemOp('ud', None, (None, 'IsLoad', 'IsStore'), 5),

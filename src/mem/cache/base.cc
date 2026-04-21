@@ -44,15 +44,20 @@
  */
 
 #include "mem/cache/base.hh"
+#include <cassert>
+#include <cstddef>
 
 #include "base/compiler.hh"
 #include "base/logging.hh"
+#include "base/trace.hh"
+#include "cpu/o3/dyn_inst_ptr.hh"
 #include "debug/Cache.hh"
 #include "debug/CacheComp.hh"
 #include "debug/CachePort.hh"
 #include "debug/CacheRepl.hh"
 #include "debug/CacheVerbose.hh"
 #include "debug/HWPrefetch.hh"
+#include "enums/CacheLevel.hh"
 #include "mem/cache/compressors/base.hh"
 #include "mem/cache/mshr.hh"
 #include "mem/cache/prefetch/base.hh"
@@ -60,10 +65,15 @@
 #include "mem/cache/tags/compressed_tags.hh"
 #include "mem/cache/tags/partitioning_policies/partition_manager.hh"
 #include "mem/cache/tags/super_blk.hh"
+#include "mem/packet.hh"
 #include "params/BaseCache.hh"
 #include "params/WriteAllocator.hh"
 #include "sim/cur_tick.hh"
-
+// [klp] {
+#include "base/types.hh"
+#include "base/intmath.hh"
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 namespace gem5
 {
 
@@ -80,7 +90,11 @@ BaseCache::CacheResponsePort::CacheResponsePort(const std::string &_name,
 
 BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
     : ClockedObject(p),
-      cache_level(p.cache_level),
+      // [klp] {
+      cache_level(p.cache_level), tag_width(p.tag_width), 
+      tag_pos(p.tag_pos), tag_granularity(p.tag_granularity),
+      tagBitMask(p.system->initWidthMask(p.tag_width, p.tag_pos)),
+      // } [klp]
       cpuSidePort (p.name + ".cpu_side_port", *this, "CpuSidePort"),
       memSidePort(p.name + ".mem_side_port", this, "MemSidePort"),
       accessor(*this),
@@ -146,6 +160,45 @@ BaseCache::~BaseCache()
 {
     delete tempBlock;
 }
+// [klp] {
+triStateVal
+BaseCache::verifySecTagInCache(const PacketPtr pkt)
+{
+  /* Tag verification always happens after a cache hit hence no need to check
+  if the blk is valid.*/
+  CacheBlk *blk = tags->findBlock({pkt->getAddr(), pkt->isSecure()});
+  /* Tag verification starts at the granule the req pointing to. */
+  int startIdx = (tags->extractBlkOffset(pkt->getAddr()) / tag_granularity);
+  unsigned granuleNumOfReq = gem5::divCeil(pkt->getSize(), tag_granularity);
+  assert(granuleNumOfReq <= (blkSize/tag_granularity));
+
+  if(!tags->areSecTagsValidInCache(blk, granuleNumOfReq, startIdx)) {
+    return gem5::triStateVal::FALSE;
+  } else {
+    bool areAllSecTagsMatch = true;
+    /* Validate if all sec tags match. */
+    for(size_t i=startIdx ; i<granuleNumOfReq ; ++i) {
+      areAllSecTagsMatch = areAllSecTagsMatch && 
+      ((pkt->getSecTag() & tagBitMask) == ((blk->secTagPtrInCache[i]) & tagBitMask));
+    }
+
+    DPRINTF(KLPDEBUG, "Verifing secure tag in cache: inst va: %x, target addr: %x, \
+                            request size: %x, veri result: %s.\n",
+            pkt->req->hasPC() ? pkt->req->getPC() : 0x00000000,
+            pkt->getAddr(),
+            pkt->getSize(),
+            areAllSecTagsMatch);
+    /* Update stats */
+    stats.cmdStats(pkt).tagVeriInCacheNum++;
+    if(areAllSecTagsMatch) {
+      stats.cmdStats(pkt).tagVeriInCachePassNum++;
+    } else {
+      stats.cmdStats(pkt).tagVeriInCacheNotPassNum++;
+    }
+    return areAllSecTagsMatch ? gem5::triStateVal::TRUE : gem5::triStateVal::FALSE;
+  }
+}
+// } [klp]
 
 void
 BaseCache::CacheResponsePort::setBlocked()
@@ -294,6 +347,10 @@ BaseCache::handleTimingReqHit(PacketPtr pkt, CacheBlk *blk, Tick request_time)
         // lat, neglecting responseLatency, modelling hit latency
         // just as the value of lat overriden by access(), which calls
         // the calculateAccessLatency() function.
+        // [klp] {
+        if(pkt->isUnCondiReExe())
+          assert(pkt->getPassSecTagVeri() != gem5::triStateVal::INIT);
+        // } [klp]
         cpuSidePort.schedTimingResp(pkt, request_time);
     } else {
         DPRINTF(Cache, "%s satisfied %s, no response needed\n", __func__,
@@ -408,27 +465,12 @@ BaseCache::handleTimingReqMiss(PacketPtr pkt, MSHR *mshr, CacheBlk *blk,
 void
 BaseCache::recvTimingReq(PacketPtr pkt)
 {
-    // [klp] demo
-    // switch (cache_level){
-    //   case enums::CacheLevel::L1I :
-    //     std::cout << "This is L1I!" << std::endl;
-    //     break;
-    //   case enums::CacheLevel::L1D :
-    //     std::cout << "This is L1D!" << std::endl;
-    //     break;
-    //   case enums::CacheLevel::L2 :
-    //     std::cout << "This is L2!" << std::endl;
-    //     break;
-    //   case enums::CacheLevel::L3 :
-    //     std::cout << "This is L3!" << std::endl;
-    //     break;
-    //   case enums::CacheLevel::TLB :
-    //     std::cout << "This is TLB!" << std::endl;
-    //     break;
-    //   default:
-    //     std::cout << "This is others!" << std::endl;
-    // }
-
+    // [klp] {
+    /* The pkt of an uncondi request is always be marked as tag verification 
+    passed.*/
+      if(cache_level == enums::CacheLevel::L1D && pkt->isUnCondiReExe())
+        pkt->setPassSecTagVeri(gem5::triStateVal::TRUE);
+    // } [klp]
     // anything that is merely forwarded pays for the forward latency and
     // the delay provided by the crossbar
     Tick forward_time = clockEdge(forwardLatency) + pkt->headerDelay;
@@ -1505,11 +1547,35 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
             if (compressor) {
                 lat += compressor->getDecompressionLatency(blk);
             }
+            // [klp] {
+            /* The current implementation protects only L1D. */
+            /* This is on the path of a read hits L1D.*/
+            if(cache_level == enums::CacheLevel::L1D){
+              /* If the packet is made by a speculative load, perform tag verification.*/
+              if(!pkt->isUnCondiReExe()){
+                gem5::triStateVal secTagVeriResult = verifySecTagInCache(pkt);
+                assert(secTagVeriResult != gem5::triStateVal::INIT);
+                /* If the tag verifies to pass, then the cache performs as normal. */
+                pkt->setPassSecTagVeri(secTagVeriResult);
+                /* If not, the cache sets the flag in packet as not pass and returns
+                directly. No need to satisfy the request. */
+                if (secTagVeriResult == gem5::triStateVal::FALSE) {
+                  return true;
+                }
+              }
+            }
+            // } [klp]
         } else {
             lat = calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
         }
 
         satisfyRequest(pkt, blk);
+        // [klp] {
+        /* Unconditional loads will fill sec tags. */
+        if(cache_level == enums::CacheLevel::L1D && pkt->isUnCondiReExe()){
+          tags->setSecTagInCache(pkt, tag_granularity, pkt->getSecTag());
+        }
+        // } [klp]
         maintainClusivity(pkt->fromCache(), blk);
 
         return true;
@@ -2065,6 +2131,14 @@ BaseCache::unserialize(CheckpointIn &cp)
 BaseCache::CacheCmdStats::CacheCmdStats(BaseCache &c,
                                         const std::string &name)
     : statistics::Group(&c, name.c_str()), cache(c),
+      // [klp] {
+      ADD_STAT(tagVeriInCachePassNum,statistics::units::Count::get(),
+      ("number of " + name + " passed verification").c_str()),
+      ADD_STAT(tagVeriInCacheNotPassNum,statistics::units::Count::get(),
+      ("number of " + name + " failed verification").c_str()),
+      ADD_STAT(tagVeriInCacheNum,statistics::units::Count::get(),
+      ("number of " + name + " failed verification").c_str()),
+      // [klp] }
       ADD_STAT(hits, statistics::units::Count::get(),
                ("number of " + name + " hits").c_str()),
       ADD_STAT(misses, statistics::units::Count::get(),
@@ -2237,7 +2311,12 @@ BaseCache::CacheCmdStats::regStatsFromParent()
 
 BaseCache::CacheStats::CacheStats(BaseCache &c)
     : statistics::Group(&c), cache(c),
-
+    // [klp] {
+    ADD_STAT(tagVeriInCachePassRate, statistics::units::Count::get(),
+    "The porportion of passed verifications in all verifications."),
+    ADD_STAT(tagVeriInCacheNotPassRate, statistics::units::Count::get(),
+    "The porportion of failed verifications in all verifications."),
+    // } [klp]
     ADD_STAT(demandHits, statistics::units::Count::get(),
              "number of demand (read+write) hits"),
     ADD_STAT(overallHits, statistics::units::Count::get(),
@@ -2343,6 +2422,17 @@ BaseCache::CacheStats::regStats()
 #define SUM_NON_DEMAND(s)                                       \
     (cmd[MemCmd::SoftPFReq]->s + cmd[MemCmd::HardPFReq]->s +    \
      cmd[MemCmd::SoftPFExReq]->s)
+
+    // [klp] {
+#define SUM_RD_DEMAND(s)                                        \
+    (cmd[MemCmd::ReadReq]->s +cmd[MemCmd::ReadExReq]->s +       \
+     cmd[MemCmd::ReadCleanReq]->s + cmd[MemCmd::ReadSharedReq]->s)
+
+    tagVeriInCachePassRate.flags(total | nozero | nonan);
+    tagVeriInCachePassRate = SUM_RD_DEMAND(tagVeriInCachePassNum) / SUM_RD_DEMAND(tagVeriInCacheNum);
+    tagVeriInCacheNotPassRate.flags(total | nozero | nonan);
+    tagVeriInCacheNotPassRate = SUM_RD_DEMAND(tagVeriInCacheNotPassNum) / SUM_RD_DEMAND(tagVeriInCacheNum);
+    // } [klp]
 
     demandHits.flags(total | nozero | nonan);
     demandHits = SUM_DEMAND(hits);

@@ -42,14 +42,20 @@
 #include "cpu/o3/lsq.hh"
 
 #include <algorithm>
+#include <cassert>
+#include <cstdint>
 #include <list>
 #include <string>
 
 #include "base/compiler.hh"
 #include "base/logging.hh"
+#include "base/trace.hh"
+#include "base/types.hh"
 #include "cpu/o3/cpu.hh"
 #include "cpu/o3/dyn_inst.hh"
+#include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/iew.hh"
+#include "cpu/o3/inst_queue.hh"
 #include "cpu/o3/limits.hh"
 #include "debug/Drain.hh"
 #include "debug/Fetch.hh"
@@ -57,12 +63,46 @@
 #include "debug/LSQ.hh"
 #include "debug/Writeback.hh"
 #include "params/BaseO3CPU.hh"
+// [klp] {
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
 
 namespace o3
 {
+
+// [klp] {
+void
+LSQ::assertWrongCasesB4GetLsqreqPtr(const DynInstPtr& inst) const {
+  assert( !(!inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt) &&
+          !(!inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt && !inst->isUncondi()) &&
+          !( inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt &&  inst->isUncondi()) &&
+          !( inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt && !inst->isUncondi())
+        );
+}
+void
+LSQ::assertRightCasesB4GetLsqreqPtr(const DynInstPtr& inst) const {
+  assert((!inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt && inst->isUncondi()) ||
+         ( inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt && !inst->isUncondi()) ||
+         ( inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt &&  inst->isUncondi()) 
+        );
+}
+void
+LSQ::assertWrongCasesB4NewLsqreq(const DynInstPtr& inst) const {
+  assert(!(!inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt) &&
+         !( inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt && !inst->isUncondi()) &&
+         !( inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt)
+        );
+}
+void
+LSQ::assertRightCasesB4NewLsqreq(const DynInstPtr& inst) const {
+  assert( (!inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt) ||
+          ( inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt && inst->isUncondi())
+  );
+}
+// } [klp]
 
 LSQ::DcachePort::DcachePort(LSQ *_lsq, CPU *_cpu) :
     RequestPort(_cpu->name() + ".dcache_port"), lsq(_lsq), cpu(_cpu),
@@ -778,10 +818,27 @@ LSQ::pushRequest(const DynInstPtr& inst, bool isLoad, uint8_t *data,
     const bool htm_cmd = isLoad && (flags & Request::HTM_CMD);
     const bool tlbi_cmd = isLoad && (flags & Request::TLBI_CMD);
 
-    if (inst->translationStarted()) {
+    // [klp] {
+    // if (inst->translationStarted()) {
+    /* Branch path that needs to get the lsqreq ptr from DynInst. */
+    if (inst->reExeLsqreq || inst->reExeUncondiLsqreq) {
+      assertWrongCasesB4GetLsqreqPtr(inst);
+      assertRightCasesB4GetLsqreqPtr(inst);
+      if(inst->specLsqreqBuilt && inst->uncondiLsqreqBuilt && inst->isUncondi()){
+        request = inst->savedRequest_uncondi;
+      }
+      if((!inst->specLsqreqBuilt &&  inst->uncondiLsqreqBuilt &&  inst->isUncondi()) || 
+         ( inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt && !inst->isUncondi())){
         request = inst->savedRequest;
+         }
+        // } [klp]
         assert(request);
     } else {
+        // [klp] {
+        /* Branch path that builds new lsqreq. */
+        assertWrongCasesB4NewLsqreq(inst);
+        assertRightCasesB4NewLsqreq(inst);
+        // } [klp]
         if (htm_cmd || tlbi_cmd) {
             assert(addr == 0x0lu);
             assert(size == 8);
@@ -803,6 +860,14 @@ LSQ::pushRequest(const DynInstPtr& inst, bool isLoad, uint8_t *data,
         inst->getFault() = NoFault;
 
         request->initiateTranslation();
+        // [klp] {
+        if(!inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt && !inst->isUncondi())
+          inst->specLsqreqBuilt = true;
+        else if (!inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt && inst->isUncondi())
+          inst->uncondiLsqreqBuilt = true;
+        else if (inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt && inst->isUncondi())
+          inst->uncondiLsqreqBuilt = true;
+        // } [klp]
     }
 
     /* This is the place were instructions get the effAddr. */
@@ -934,7 +999,16 @@ LSQ::SingleDataRequest::initiateTranslation()
         setState(State::Translation);
         flags.set(Flag::TranslationStarted);
 
+        // [klp] {
+        assert(isUnConditional() == _inst->isUncondi());
+        if(( _inst->specLsqreqBuilt && !_inst->uncondiLsqreqBuilt && !_inst->isUncondi()) ||
+           (!_inst->specLsqreqBuilt &&  _inst->uncondiLsqreqBuilt &&  _inst->isUncondi()) ){
         _inst->savedRequest = this;
+            } else if ( _inst->specLsqreqBuilt &&  _inst->uncondiLsqreqBuilt &&  _inst->isUncondi()){
+              _inst->savedRequest_uncondi = this;
+            }
+        // } [klp]
+
         sendFragmentToTranslation(0);
     } else {
         _inst->setMemAccPredicate(false);
@@ -1009,7 +1083,15 @@ LSQ::SplitDataRequest::initiateTranslation()
         _inst->translationStarted(true);
         setState(State::Translation);
         flags.set(Flag::TranslationStarted);
+        // [klp] {
+          assert(isUnConditional() == _inst->isUncondi());
+          if(( _inst->specLsqreqBuilt && !_inst->uncondiLsqreqBuilt && !_inst->isUncondi()) ||
+              (!_inst->specLsqreqBuilt &&  _inst->uncondiLsqreqBuilt &&  _inst->isUncondi()) ){
         _inst->savedRequest = this;
+              } else if ( _inst->specLsqreqBuilt &&  _inst->uncondiLsqreqBuilt &&  _inst->isUncondi()){
+                _inst->savedRequest_uncondi = this;
+              }
+        // } [klp]
         numInTranslationFragments = 0;
         numTranslatedFragments = 0;
         _fault.resize(_reqs.size());
@@ -1034,7 +1116,16 @@ LSQ::LSQRequest::LSQRequest(
               _inst->isStoreConditional() || _inst->isAtomic() ||
               _inst->isLoad());
     flags.set(Flag::IsAtomic, _inst->isAtomic());
+    // [klp] {
+    this->unCondiState = inst->getUncondiState();
+
+    if(!inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt){
     install();
+    }
+    if(inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt && inst->isUncondi()){
+      install_uncondi_lsqreq_in_lsqentry();
+    }
+    // } [klp]
 }
 
 LSQ::LSQRequest::LSQRequest(
@@ -1057,7 +1148,16 @@ LSQ::LSQRequest::LSQRequest(
               _inst->isStoreConditional() || _inst->isAtomic() ||
               _inst->isLoad());
     flags.set(Flag::IsAtomic, _inst->isAtomic());
+    // [klp] {
+    this->unCondiState = inst->getUncondiState();
+
+    if(!inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt){
     install();
+    }
+    if(inst->specLsqreqBuilt && !inst->uncondiLsqreqBuilt && inst->isUncondi()){
+      install_uncondi_lsqreq_in_lsqentry();
+    }
+    // } [klp]
 }
 
 void
@@ -1071,6 +1171,15 @@ LSQ::LSQRequest::install()
         _port.storeQueue[_inst->sqIdx].setRequest(this);
     }
 }
+
+// [klp] {
+void
+LSQ::LSQRequest::install_uncondi_lsqreq_in_lsqentry()
+{
+    assert(isLoad());
+    _port.loadQueue[_inst->lqIdx].setUncondiRequest(this);
+}
+// } [klp]
 
 bool LSQ::LSQRequest::squashed() const { return _inst->isSquashed(); }
 
@@ -1115,6 +1224,9 @@ LSQ::LSQRequest::~LSQRequest()
 {
     assert(!isAnyOutstandingRequest());
     _inst->savedRequest = nullptr;
+    // [klp] {
+    _inst->savedRequest_uncondi = nullptr;
+    // } [klp]
 
     for (auto r: _packets)
         delete r;
@@ -1183,12 +1295,29 @@ LSQ::SplitDataRequest::recvTimingResp(PacketPtr pkt)
         pktIdx++;
     assert(pktIdx < _packets.size());
     numReceivedPackets++;
+    // [klp] {
+    if(pkt->getPassSecTagVeri() == gem5::triStateVal::FALSE){
+      mainPktPassTagVeriState = gem5::triStateVal::FALSE;
+    }
+    DPRINTF(KLPDEBUG, "LSQ received a sub pkt of a split data request. Sub pkt tag veri result: %s, target addr: %x, pkt obj addr: %x.\n",
+            pkt->getPassSecTagVeri(),
+            pkt->getAddr(),
+            pkt);       
+    // } [klp]
     if (numReceivedPackets == _packets.size()) {
         flags.set(Flag::Complete);
         /* Assemble packets. */
         PacketPtr resp = isLoad()
-            ? Packet::createRead(_mainReq)
+        // [klp] {
+            ? Packet::createRead(_mainReq, mainPktPassTagVeriState)
+            /* Only make read pkts carry the sec tags. */
+            // : Packet::createWrite(_mainReq, mainPktPassTagVeriState);
             : Packet::createWrite(_mainReq);
+        DPRINTF(KLPDEBUG, "LSQ received all sub pkts of a split data request. Pkt tag veri result:%s, target addr: %x, pkt obj addr: %x.\n",
+                pkt->getPassSecTagVeri(),
+                pkt->getAddr(),
+                pkt);
+        // } [klp]
         if (isLoad())
             resp->dataStatic(_inst->memData);
         else
@@ -1206,10 +1335,35 @@ LSQ::SingleDataRequest::buildPackets()
 {
     /* Retries do not create new packets. */
     if (_packets.size() == 0) {
+        // [klp] { 
+        /* uint64_t secTagRegVal = 0x0; // [scrapped] Don't use st reg anymore
+        if(instruction()->isLoad()){
+          secTagRegVal = instruction()->getDestRegVal(instruction()->staticInst.get(),1);
+        }else if (instruction()->isStore()) {
+          secTagRegVal = instruction()->getDestRegVal(instruction()->staticInst.get(),0);
+        } */
+        /* [[maybe_unused]]gem5::triStateVal tmpTriVal = gem5::triStateVal::INIT;
+        if((instruction()->getUncondiState() == gem5::triStateVal::TRUE)
+            || (instruction()->isNonSpeculative() && instruction()->isLoad())
+            || (instruction()->isSerializing() && instruction()->isLoad())
+          )
+        {
+            tmpTriVal = gem5::triStateVal::TRUE;
+        } */
+        assert(this->unCondiState == instruction()->getUncondiState());
         _packets.push_back(
                 isLoad()
-                    ?  Packet::createRead(req())
+                    ?  Packet::createRead(req(), this->unCondiState, instruction()->getSecTagInDynInst())
+                    /* Only make read pkts carry the sec tags. */
+                    // :  Packet::createWrite(req(), instruction()->getUncondiState(), secTagRegVal));
                     :  Packet::createWrite(req()));
+        DPRINTF(KLPDEBUG, "LSQ building a single req. SecTagVal: %x, inst assembly: %s, uncondi state: %s, target addr: %x, pkt obj addr: %x.\n",
+                instruction()->getSecTagInDynInst(), 
+                instruction()->staticInst->disassemble(instruction().get()->pcState().instAddr(),0),
+                isUnConditional()? "True" : "False",
+                _addr,
+                _packets.back());
+        // } [klp]
         _packets.back()->dataStatic(_inst->memData);
         _packets.back()->senderState = this;
 
@@ -1236,6 +1390,22 @@ LSQ::SingleDataRequest::buildPackets()
 void
 LSQ::SplitDataRequest::buildPackets()
 {
+    // [klp] {
+    /* uint64_t secTagRegVal = 0x0; // Don't use st reg anymore
+    if(instruction()->isLoad()){
+      secTagRegVal = instruction()->getDestRegVal(instruction()->staticInst.get(),1);
+    }else if (instruction()->isStore()) {
+      secTagRegVal = instruction()->getDestRegVal(instruction()->staticInst.get(),0);
+    } */
+    /* [[maybe_unused]]gem5::triStateVal tmpTriVal = gem5::triStateVal::INIT;
+    if((instruction()->getUncondiState() == gem5::triStateVal::TRUE)
+        || (instruction()->isNonSpeculative() && instruction()->isLoad())
+        || (instruction()->isSerializing() && instruction()->isLoad()) 
+      )
+    {
+        tmpTriVal = gem5::triStateVal::TRUE;
+    } */
+    // } [klp]
     /* Extra data?? */
     Addr base_address = _addr;
 
@@ -1262,8 +1432,13 @@ LSQ::SplitDataRequest::buildPackets()
         }
         for (int i = 0; i < _reqs.size() && _fault[i] == NoFault; i++) {
             RequestPtr req = _reqs[i];
-            PacketPtr pkt = isLoad() ? Packet::createRead(req)
+            // [klp]
+            assert(this->unCondiState == instruction()->getUncondiState());
+            PacketPtr pkt = isLoad() ? Packet::createRead(req, this->unCondiState, instruction()->getSecTagInDynInst())
                                      : Packet::createWrite(req);
+            DPRINTF(KLPDEBUG,"LSQ building a split sub req. SecTagVal: %x, sub pkt obj addr: %x.\n",
+                            instruction()->getSecTagInDynInst(), pkt);
+            // } [klp]
             ptrdiff_t offset = req->getVaddr() - base_address;
             if (isLoad()) {
                 pkt->dataStatic(_inst->memData + offset);

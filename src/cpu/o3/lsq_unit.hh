@@ -91,6 +91,11 @@ class LSQUnit
     static constexpr auto MaxDataBytes = MaxVecRegLenInBytes;
 
     using LSQRequest = LSQ::LSQRequest;
+    // [klp] {
+    void assertWrongCasesB4WB(const DynInstPtr inst, const PacketPtr pkt) const;
+    void assertRightCasesB4WB(const DynInstPtr inst, const PacketPtr pkt) const;
+    // } [klp]
+
   private:
     class LSQEntry
     {
@@ -99,6 +104,16 @@ class LSQUnit
         DynInstPtr _inst;
         /** The request. */
         LSQRequest* _request = nullptr;
+        // [klp] {
+        /* The pointer to the unconditional request */
+        LSQRequest* _request_uncondi = nullptr;
+        public:
+        /* Whether using the _request or the _request_uncondi.
+          Set as false by default indicating that the _request
+          is being used by default. */
+        bool isUsingUncondiReq = false;
+        private:
+        // } [klp]
         /** The size of the operation. */
         uint32_t _size = 0;
         /** Valid entry. */
@@ -111,6 +126,12 @@ class LSQUnit
                 _request->freeLSQEntry();
                 _request = nullptr;
             }
+            // [klp] {
+            if (_request_uncondi != nullptr) {
+              _request_uncondi->freeLSQEntry();
+              _request_uncondi = nullptr;
+            }
+            // } [klp]
         }
 
         void
@@ -121,6 +142,12 @@ class LSQUnit
                 _request->freeLSQEntry();
             }
             _request = nullptr;
+            // [klp] {
+            if (_request_uncondi != nullptr) {
+              _request_uncondi->freeLSQEntry();
+              _request_uncondi = nullptr;
+            }
+            // } [klp]
             _valid = false;
             _size = 0;
         }
@@ -136,6 +163,9 @@ class LSQUnit
 
         LSQRequest* request() { return _request; }
         void setRequest(LSQRequest* r) { _request = r; }
+        // [klp] {
+        void setUncondiRequest(LSQRequest* r) { _request_uncondi = r; }
+        // } [klp]
         bool hasRequest() { return _request != nullptr; }
         /** Member accessors. */
         /** @{ */
