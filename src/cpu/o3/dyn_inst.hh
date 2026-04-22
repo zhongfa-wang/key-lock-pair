@@ -44,12 +44,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <deque>
 #include <list>
 #include <string>
 
 #include "base/refcnt.hh"
 #include "base/trace.hh"
+#include "base/types.hh"
 #include "cpu/checker/cpu.hh"
 #include "cpu/exec_context.hh"
 #include "cpu/exetrace.hh"
@@ -347,6 +349,39 @@ class DynInst : public ExecContext, public RefCounted
 
     /** Pointer to the data for the memory access. */
     uint8_t *memData = nullptr;
+    // [klp] {
+    private:
+
+    /* A two-bit flag carried by a Dyninst reflecting the tag verification result
+    TRUE-pass, FALSE-not pass, INIT-initial, no set. */
+    triStateVal passTagVeriDynInstCarrier = gem5::triStateVal::INIT;
+    
+    /* Actually this hasn't to be a triStateVal. But making it a bool leads ambiguous 
+    problem in Packet's constructor. Hence making it as follow. Only using the TRUE 
+    and FALSE state. The value is initialized to FALSE, indicating that all instructions
+    are regarded as speculative until they can be regarded as non-speculative.*/
+    triStateVal unCondiStateInst = gem5::triStateVal::FALSE;
+
+    public:
+    /* The flag indicating that the inst should be executed unconditionally. 
+    Used in commit stage in case of repeatedly sending an inst to IEW.*/
+    bool isReScheduled = false;
+    /* The requests are managed as in-order in klp. An uncondition request is made
+    (if needed) only after the speculative response is received. */
+    bool isSpecRespRecvd = false;
+    /*  */
+    bool isUncondiLsqreqBuilt = false;
+
+    triStateVal getPassTagVeriDynInstCarrier() const {return passTagVeriDynInstCarrier;}
+    void setPassTagVeriDynInstCarrier(triStateVal veriResult) {passTagVeriDynInstCarrier = veriResult;}
+
+    triStateVal getUncondiState() const {return unCondiStateInst;}
+    void setUncondiState(triStateVal flagVal) {unCondiStateInst = flagVal;}
+
+    bool isUncondi() {return unCondiStateInst == gem5::triStateVal::TRUE;}
+    bool isKlpLoad() const {return staticInst->isKlpLoad();}
+    bool isKlpStore() const {return staticInst->isKlpStore();}
+    // } [klp]
 
     /** Load queue index. */
     ssize_t lqIdx = -1;
@@ -1144,7 +1179,25 @@ class DynInst : public ExecContext, public RefCounted
             return;
         cpu->getReg(reg, val, threadNumber);
     }
+    // [klp] {
+    RegVal
+    getDestRegVal(const StaticInst *si, int idx)
+    {
+        const PhysRegIdPtr reg = renamedDestIdx(idx);
+        if (reg->is(InvalidRegClass))
+            return 0;
+        return cpu->getReg(reg, threadNumber);
+    }
 
+    void
+    getDestRegVal(const StaticInst *si, int idx, void *val)
+    {
+        const PhysRegIdPtr reg = renamedDestIdx(idx);
+        if (reg->is(InvalidRegClass))
+            return;
+        cpu->getReg(reg, val, threadNumber);
+    }
+    // } [klp]
     void *
     getWritableRegOperand(const StaticInst *si, int idx) override
     {

@@ -68,6 +68,10 @@ class BaseTags(ClockedObject):
     cxx_header = "mem/cache/tags/base.hh"
     cxx_class = "gem5::BaseTags"
 
+    # [klp] {
+    tag_width = Param.UInt64(4, "Parent.tag_widthTag width, no more than 31. The c_flwsp is hard coded as using sp_uw (32 bits). The length of the tag width shouldn't be larger than that. The MSB bit is meta data.")
+    tag_granularity = Param.UInt64(Parent.tag_granularity, "The granularity of tags. One key per 16 Bytes by default. The blkSize should be divisible by this number.")
+    # } [klp]
     # Get system to which it belongs
     system = Param.System(Parent.any, "System we belong to")
 

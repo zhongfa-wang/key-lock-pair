@@ -77,11 +77,27 @@ class OperandList:
             # see if we've already seen this one
             op_desc = self.find_base(op_base)
             if op_desc:
+                # [klp] {
+                """ In decoder.isa, both c_flwsp and c_slwsp are hard coded
+                as using sp_uw instead of sp. Need to recover that if I want
+                to use sp instead of sp_uw in my codes in mem.isa."""
                 if op_ext and op_ext != "" and op_desc.ext != op_ext:
-                    error(
-                        "Inconsistent extensions for operand %s: %s - %s"
-                        % (op_base, op_desc.ext, op_ext)
-                    )
+                    if op_desc.full_name == "sp" and op_desc.ext == None and op_full == "sp_uw":
+                        op_sp_uw = op_desc
+                        op_sp_uw.full_name = 'sp_uw'
+                        op_sp_uw.ext = 'uw'
+                        op_sp_uw.eff_ext = 'uw'
+                        op_sp_uw.ctype = 'uint32_t'
+                        self.replace(op_desc,op_sp_uw)
+                        op_desc = op_sp_uw
+                        # breakpoint()
+                    else:
+                        # Origin code
+                        error(
+                            "Inconsistent extensions for operand %s: %s - %s"
+                            % (op_base, op_desc.ext, op_ext)
+                        )
+                # } [klp]
                 op_desc.is_src = op_desc.is_src or is_src
                 op_desc.is_dest = op_desc.is_dest or is_dest
                 if isElem:
@@ -147,7 +163,13 @@ class OperandList:
     def append(self, op_desc):
         self.items.append(op_desc)
         self.bases[op_desc.base_name] = op_desc
-
+    # [klp] {
+    def replace(self, op_sp_ud, op_sp_uw):
+        self.items.remove(op_sp_ud)
+        self.items.append(op_sp_uw)
+        self.bases[op_sp_ud.base_name] = op_sp_uw
+        # breakpoint()
+    # } [klp]
     def find_base(self, base_name):
         # like self.bases[base_name], but returns None if not found
         # (rather than raising exception)

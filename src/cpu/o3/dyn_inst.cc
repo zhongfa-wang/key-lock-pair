@@ -43,9 +43,13 @@
 #include <algorithm>
 
 #include "base/intmath.hh"
+#include "base/trace.hh"
 #include "debug/DynInst.hh"
 #include "debug/IQ.hh"
 #include "debug/O3PipeView.hh"
+// [klp] {
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -412,6 +416,12 @@ DynInst::initiateMemRead(Addr addr, unsigned size, Request::Flags flags,
                                const std::vector<bool> &byte_enable)
 {
     assert(byte_enable.size() == size);
+    // [klp] {
+    DPRINTF(KLPDEBUG, "Initiate mem read. Inst VA: %x, inst assembly: %s, target addr: %x.\n",
+                      this->pcState().instAddr(),
+                      staticInst->disassemble(pcState().instAddr(),0),
+                      addr);
+    // } [klp]
     return cpu->pushRequest(
         dynamic_cast<DynInstPtr::PtrType>(this),
         /* ld */ true, nullptr, size, addr, flags, nullptr, nullptr,

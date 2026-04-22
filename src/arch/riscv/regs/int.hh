@@ -72,6 +72,10 @@ enum : RegIndex
     _S8Idx,   _S9Idx, _S10Idx, _S11Idx,
     _T3Idx,   _T4Idx, _T5Idx,  _T6Idx,
 
+    // [klp] {
+    _StIdx, // Security tag (st) register in int reg class
+    // } [klp]
+
     NumArchRegs,
 
     _Ureg0Idx = NumArchRegs,
@@ -88,6 +92,9 @@ namespace int_reg
 {
 
 inline constexpr RegId
+    // [klp] {
+    St = intRegClass[_StIdx],
+    // } [klp]
     Zero = intRegClass[_ZeroIdx],
     Ra = intRegClass[_RaIdx],
     Sp = intRegClass[_SpIdx],
@@ -131,6 +138,9 @@ const std::vector<std::string> RegNames = {
     "s4", "s5", "s6", "s7",
     "s8", "s9", "s10", "s11",
     "t3", "t4", "t5", "t6"
+    // [klp] {
+    ,"st"
+    // } [klp]
 };
 
 } // namespace int_reg
@@ -139,6 +149,9 @@ const std::vector<std::string> RegNames = {
 inline constexpr auto
     &ReturnAddrReg = int_reg::Ra,
     &StackPointerReg = int_reg::Sp,
+    // [klp] {
+    &SecurityTagReg = int_reg::St,
+    // } [klp]    
     &ThreadPointerReg = int_reg::Tp,
     &ReturnValueReg = int_reg::A0,
     &AMOTempReg = int_reg::Ureg0,

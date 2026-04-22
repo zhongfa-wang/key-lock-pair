@@ -42,14 +42,20 @@
 #include "cpu/o3/lsq.hh"
 
 #include <algorithm>
+#include <cassert>
+#include <cstdint>
 #include <list>
 #include <string>
 
 #include "base/compiler.hh"
 #include "base/logging.hh"
+#include "base/trace.hh"
+#include "base/types.hh"
 #include "cpu/o3/cpu.hh"
 #include "cpu/o3/dyn_inst.hh"
+#include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/iew.hh"
+#include "cpu/o3/inst_queue.hh"
 #include "cpu/o3/limits.hh"
 #include "debug/Drain.hh"
 #include "debug/Fetch.hh"
@@ -57,6 +63,9 @@
 #include "debug/LSQ.hh"
 #include "debug/Writeback.hh"
 #include "params/BaseO3CPU.hh"
+// [klp] {
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -779,6 +788,36 @@ LSQ::pushRequest(const DynInstPtr& inst, bool isLoad, uint8_t *data,
     const bool tlbi_cmd = isLoad && (flags & Request::TLBI_CMD);
 
     if (inst->translationStarted()) {
+        // [klp] {
+        if(inst->isReScheduled && !inst->isUncondiLsqreqBuilt){
+          /* Clear the spec lsqreq */
+          inst->savedRequest->_port.loadQueue[inst->lqIdx].setRequest(nullptr);
+          inst->savedRequest->discard();
+          inst->savedRequest = nullptr;
+          /* Build the uncondi lsqreq*/
+          if (htm_cmd || tlbi_cmd) {
+              assert(addr == 0x0lu);
+              assert(size == 8);
+              request = new UnsquashableDirectRequest(&thread[tid], inst, flags);
+          } else if (needs_burst) {
+              request = new SplitDataRequest(&thread[tid], inst, isLoad, addr,
+                      size, flags, data, res);
+          } else {
+              request = new SingleDataRequest(&thread[tid], inst, isLoad, addr,
+                      size, flags, data, res, std::move(amo_op));
+          }
+          assert(request);
+          request->_byteEnable = byte_enable;
+          inst->setRequest();
+          request->taskId(cpu->taskId());
+  
+          // There might be fault from a previous execution attempt if this is
+          // a strictly ordered load
+          inst->getFault() = NoFault;
+  
+          request->initiateTranslation();
+        }
+        // } [klp]
         request = inst->savedRequest;
         assert(request);
     } else {
@@ -1035,6 +1074,9 @@ LSQ::LSQRequest::LSQRequest(
               _inst->isLoad());
     flags.set(Flag::IsAtomic, _inst->isAtomic());
     install();
+    // [klp] {
+    unCondiState = inst->getUncondiState();
+    // } [klp]
 }
 
 LSQ::LSQRequest::LSQRequest(
@@ -1058,6 +1100,9 @@ LSQ::LSQRequest::LSQRequest(
               _inst->isLoad());
     flags.set(Flag::IsAtomic, _inst->isAtomic());
     install();
+    // [klp] {
+    unCondiState = inst->getUncondiState();
+    // } [klp]
 }
 
 void
@@ -1183,12 +1228,29 @@ LSQ::SplitDataRequest::recvTimingResp(PacketPtr pkt)
         pktIdx++;
     assert(pktIdx < _packets.size());
     numReceivedPackets++;
+    // [klp] {
+    if(pkt->getPassSecTagVeri() == gem5::triStateVal::FALSE){
+      mainPktPassTagVeriState = gem5::triStateVal::FALSE;
+    }
+    DPRINTF(KLPDEBUG, "LSQ received a sub pkt of a split data request. Sub pkt tag veri result: %s, target addr: %x, pkt obj addr: %x.\n",
+            pkt->getPassSecTagVeri(),
+            pkt->getAddr(),
+            pkt);       
+    // } [klp]
     if (numReceivedPackets == _packets.size()) {
         flags.set(Flag::Complete);
         /* Assemble packets. */
         PacketPtr resp = isLoad()
-            ? Packet::createRead(_mainReq)
+        // [klp] {
+            ? Packet::createRead(_mainReq, mainPktPassTagVeriState)
+            /* Only make read pkts carry the sec tags. */
+            // : Packet::createWrite(_mainReq, mainPktPassTagVeriState);
             : Packet::createWrite(_mainReq);
+        DPRINTF(KLPDEBUG, "LSQ received all sub pkts of a split data request. Pkt tag veri result:%s, target addr: %x, pkt obj addr: %x.\n",
+                pkt->getPassSecTagVeri(),
+                pkt->getAddr(),
+                pkt);
+        // } [klp]
         if (isLoad())
             resp->dataStatic(_inst->memData);
         else
@@ -1206,10 +1268,25 @@ LSQ::SingleDataRequest::buildPackets()
 {
     /* Retries do not create new packets. */
     if (_packets.size() == 0) {
+        // [klp] { 
+        assert(this->unCondiState == instruction()->getUncondiState());
         _packets.push_back(
                 isLoad()
-                    ?  Packet::createRead(req())
+                    ?  (instruction()->isKlpLoad()?
+                        Packet::createRead(req(), this->unCondiState, instruction()->getSecTagInDynInst()):
+                        Packet::createRead(req()))
+                    /* Only make read pkts carry the sec tags. */
+                    // :  Packet::createWrite(req(), instruction()->getUncondiState(), secTagRegVal));
                     :  Packet::createWrite(req()));
+        DPRINTF(KLPDEBUG, "LSQ building a single req. SecTagVal: %x, inst assembly: %s, uncondi state: %s, target addr: %x, pkt obj addr: %x.\n",
+                instruction()->getSecTagInDynInst(), 
+                instruction()->staticInst->disassemble(instruction().get()->pcState().instAddr(),0),
+                isUnConditional()? "True" : "False",
+                _addr,
+                _packets.back());
+        /* Transfer inst's isKlpLoad state to the packet. */
+        _packets.back()->isKlpRead = instruction()->isKlpLoad();
+        // } [klp]
         _packets.back()->dataStatic(_inst->memData);
         _packets.back()->senderState = this;
 
@@ -1262,8 +1339,17 @@ LSQ::SplitDataRequest::buildPackets()
         }
         for (int i = 0; i < _reqs.size() && _fault[i] == NoFault; i++) {
             RequestPtr req = _reqs[i];
-            PacketPtr pkt = isLoad() ? Packet::createRead(req)
+            // [klp]
+            assert(this->unCondiState == instruction()->getUncondiState());
+            PacketPtr pkt = isLoad() ? (instruction()->isKlpLoad()?
+                                        Packet::createRead(req, this->unCondiState, instruction()->getSecTagInDynInst()):
+                                        Packet::createRead(req))
                                      : Packet::createWrite(req);
+            DPRINTF(KLPDEBUG,"LSQ building a split sub req. SecTagVal: %x, sub pkt obj addr: %x.\n",
+                            instruction()->getSecTagInDynInst(), pkt);
+                            /* Transfer inst's isKlpLoad state to the packet. */
+            pkt->isKlpRead = instruction()->isKlpLoad();
+            // } [klp]
             ptrdiff_t offset = req->getVaddr() - base_address;
             if (isLoad()) {
                 pkt->dataStatic(_inst->memData + offset);

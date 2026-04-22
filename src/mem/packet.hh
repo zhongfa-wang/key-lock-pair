@@ -63,6 +63,10 @@
 #include "mem/htm.hh"
 #include "mem/request.hh"
 #include "sim/byteswap.hh"
+// [klp] {
+#include "base/trace.hh"
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -375,6 +379,31 @@ class Packet : public Printable, public Extensible<Packet>
 
     /// A pointer to the original request.
     RequestPtr req;
+    // [klp] {
+    private:
+    /* Tag. The MSB bit is a control bit. 
+    0: doesn't carry legistic tag. 1: carries a legistic tag. */
+    uint64_t secTagInPkt = 0x0;
+    /* A two-bit flag carried by a packet reflecting the tag verification results.
+    TRUE-pass, FALSE-not pass, INIT-initial, no set. */
+    triStateVal passSecTagVeriPktCarrier= INIT;
+    /* A two-bit flag reflecting the memory instruction's non-speculative state.
+    TRUE-non-speculative, FALSE-speculative, INIT-initial, no set. */
+    triStateVal unCondiStatePkt = INIT;
+
+    public:
+    /* Is the corresponding inst a klpload (load that is protected by klp). */
+    bool isKlpRead = false;
+
+    uint64_t getSecTag() {return secTagInPkt;}
+    /* If the pkt is from a speculative load or not. */
+    bool isUnCondiReExe() const {return unCondiStatePkt == gem5::triStateVal::TRUE;}
+    /* Returns the tag verification result. */
+    bool passSecTagVeri(); // True = passed. False = not passed.
+    /* Log the tag verification result in the packet. */
+    void setPassSecTagVeri(triStateVal evalResult) {passSecTagVeriPktCarrier = evalResult;}
+    triStateVal getPassSecTagVeri () const {return passSecTagVeriPktCarrier;}
+    // } [klp]
 
   private:
    /**
@@ -469,6 +498,9 @@ class Packet : public Printable, public Extensible<Packet>
     {
         SenderState* predecessor;
         SenderState() : predecessor(NULL) {}
+        // [klp] {
+        triStateVal unCondiState = gem5::triStateVal::FALSE;
+        // } [klp]
         virtual ~SenderState() {}
     };
 
@@ -1045,7 +1077,96 @@ class Packet : public Printable, public Extensible<Packet>
     {
         return new Packet(req, makeWriteCmd(req));
     }
+    // [klp] {
+    /* Alternative createRead and createWrite methods */
+    /* RW for single data requests */
+    static PacketPtr
+    createRead(const RequestPtr &req, triStateVal unCondiState, const uint64_t secTag)
+    {
+        return new Packet(req, makeReadCmd(req), (triStateVal)unCondiState, (uint64_t)secTag);
+    }
+    static PacketPtr
+    createWrite(const RequestPtr &req, triStateVal unCondiState, const uint64_t secTag)
+    {
+        return new Packet(req, makeWriteCmd(req), (triStateVal)unCondiState,  (uint64_t)secTag);
+    }
+    /* Alternative constructor of Packet. Used when sending pkts from lsq to cache.
+     Passes dynInst's instruction tag to the Packet. */
+    Packet(const RequestPtr &_req, MemCmd _cmd, triStateVal unCondiState, const uint64_t secTag)
+    :  cmd(_cmd), id((PacketId)_req.get()), req(_req), 
+       data(nullptr), addr(0), _isSecure(false), size(0),
+       _qosValue(0),
+       htmReturnReason(HtmCacheFailure::NO_FAIL),
+       htmTransactionUid(0),
+       headerDelay(0), snoopDelay(0),
+       payloadDelay(0), senderState(NULL)
+    {
+      /* MSB == 1 means it's a legal sec tag value. */
+      assert((secTag & 0x8000'0000'0000'0000) == 0x8000'0000'0000'0000);
+      unCondiStatePkt = unCondiState;
+      secTagInPkt = secTag;
+      DPRINTF(KLPDEBUG,"Creating packet of speculative req: req inst VA: %x, uncondi state: %s, tag: %llx\n",
+              _req.get()->hasPC()? _req.get()->getPC() : 0x00000000,
+              unCondiState == gem5::triStateVal::TRUE? "Uncondi":"Speculative",
+              secTag
+            );
+        flags.clear();
+        if (req->hasPaddr()) {
+            addr = req->getPaddr();
+            flags.set(VALID_ADDR);
+            _isSecure = req->isSecure();
+        }
+        if (req->isHTMCmd()) {
+            flags.set(VALID_ADDR);
+            assert(addr == 0x0);
+        }
+        if (req->hasSize()) {
+            size = req->getSize();
+            flags.set(VALID_SIZE);
+        }
+    }
 
+    /* Alternative createRead and createWrite methods for createing pkts
+    after receiving all the sub packets of split data responses. */
+    static PacketPtr
+    createRead(const RequestPtr &req, triStateVal flagVal)
+    {
+        return new Packet(req, makeReadCmd(req), flagVal);
+    }
+
+    static PacketPtr
+    createWrite(const RequestPtr &req, triStateVal flagVal)
+    {
+        return new Packet(req, makeWriteCmd(req), flagVal);
+    }
+
+    /* Alternative constructor. Used when building response pkt with all sub pkts of a split data response.*/
+    Packet(const RequestPtr &_req, MemCmd _cmd, triStateVal passTagVeriState)
+    :  cmd(_cmd), id((PacketId)_req.get()), req(_req),
+       data(nullptr), addr(0), _isSecure(false), size(0),
+       _qosValue(0),
+       htmReturnReason(HtmCacheFailure::NO_FAIL),
+       htmTransactionUid(0),
+       headerDelay(0), snoopDelay(0),
+       payloadDelay(0), senderState(NULL)
+{
+    setPassSecTagVeri(passTagVeriState);
+    flags.clear();
+    if (req->hasPaddr()) {
+        addr = req->getPaddr();
+        flags.set(VALID_ADDR);
+        _isSecure = req->isSecure();
+    }
+    if (req->isHTMCmd()) {
+        flags.set(VALID_ADDR);
+        assert(addr == 0x0);
+    }
+    if (req->hasSize()) {
+        size = req->getSize();
+        flags.set(VALID_SIZE);
+    }
+}
+    // } [klp]
     /**
      * clean up packet variables
      */

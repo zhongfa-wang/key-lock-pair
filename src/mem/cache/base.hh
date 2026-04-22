@@ -76,8 +76,9 @@
 #include "sim/serialize.hh"
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"
-// [klp] include the header that contains the cachelevel enum
+// [klp] include the header that contains the cachelevel enum {
 #include "enums/CacheLevel.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -100,11 +101,25 @@ struct BaseCacheParams;
  */
 class BaseCache : public ClockedObject
 {
+  // [klp] {
+  public:
+    /* Verify if the key in pkt and the lock in  */
+    triStateVal verifySecTagInCache(const PacketPtr pkt);
+  // } [klp]
   protected:
+    // [klp] {
     /**
-    * Flag reflexing cache levels: l1d, l1i, l2, l3, tlb, others
+    * Flag reflexing cache levels: L1D, L1I, L2, L3, TLB, others
     */
     const enums::CacheLevel cache_level;
+    // Parameter that determines the width of the memory tag.
+    const uint64_t tag_width;
+    // Controlling on which bit from LSB of the hashing result register starts the tag.
+    const uint64_t tag_pos;
+    // Parameter that determines the granularity of the memory tag.
+    const uint64_t tag_granularity;
+    uint64_t tagBitMask;
+    // } [klp]
 
     /**
      * Indexes to enumerate the MSHR queues.
@@ -1012,6 +1027,15 @@ class BaseCache : public ClockedObject
 
         const BaseCache &cache;
 
+        // [klp] {
+        /* Stat for the total number of loads that passed the tag  verification.*/
+        statistics::Scalar tagVeriInCachePassNum;
+        /* Stat for the total number of loads that failed the tag verification.*/
+        statistics::Scalar tagVeriInCacheNotPassNum;
+        /* Stat fo rhte total number of verification. */
+        statistics::Scalar tagVeriInCacheNum;
+        // } [klp]
+
         /** Number of hits per thread for each type of command.
             @sa Packet::Command */
         statistics::Vector hits;
@@ -1063,6 +1087,11 @@ class BaseCache : public ClockedObject
         }
 
         const BaseCache &cache;
+
+        // [klp] {
+        statistics::Formula tagVeriInCachePassRate;
+        statistics::Formula tagVeriInCacheNotPassRate;
+        // } [klp]
 
         /** Number of hits for demand accesses. */
         statistics::Formula demandHits;

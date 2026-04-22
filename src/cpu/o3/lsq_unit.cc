@@ -40,9 +40,12 @@
  */
 
 #include "cpu/o3/lsq_unit.hh"
+#include <cassert>
 
 #include "arch/generic/debugfaults.hh"
 #include "base/str.hh"
+#include "base/trace.hh"
+#include "base/types.hh"
 #include "cpu/checker/cpu.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/limits.hh"
@@ -54,6 +57,9 @@
 #include "debug/O3PipeView.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
+// [klp] {
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -106,7 +112,10 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
 {
     LSQRequest *request = dynamic_cast<LSQRequest *>(pkt->senderState);
     DynInstPtr inst = request->instruction();
-
+    // [klp] {
+    if(!request->isUnConditional() && inst->isLoad()){
+      inst->isSpecRespRecvd = true;}
+    // } [klp]
     // hardware transactional memory
     // sanity check
     if (pkt->isHtmTransactional() && !inst->isSquashed()) {
@@ -161,6 +170,19 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
     }
 
     cpu->ppDataAccessComplete->notify(std::make_pair(inst, pkt));
+
+    // [klp] {
+    if (inst->isKlpLoad()) {
+      inst->setPassTagVeriDynInstCarrier(pkt->getPassSecTagVeri());
+      if (!pkt->passSecTagVeri()){
+        return;
+      }
+      DPRINTF(KLPDEBUG,"The load key verification failed, sending it to commit. Inst va: %x, Inst assembly: %s, unconditional state: %s.\n",
+              inst->pcState().instAddr(),
+              inst->staticInst->disassemble(inst->pcState().instAddr(),0),
+              (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False");
+    }
+    // } [klp]
 
     assert(!cpu->switchedOut());
     if (!inst->isSquashed()) {

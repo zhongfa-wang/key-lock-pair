@@ -70,6 +70,10 @@ CacheBlk::insert(const KeyType &tag,
 
     // Insertion counts as a reference to the block
     increaseRefCount();
+    // [klp] {
+    /* Invalidate all sec tags if a new blk is filled. */
+    invalidateSecTag();
+    // } [klp]
 }
 
 void
