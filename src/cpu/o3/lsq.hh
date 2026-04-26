@@ -288,6 +288,12 @@ class LSQ
         uint32_t _numOutstandingPackets;
         AtomicOpFunctorPtr _amo_op;
         bool _hasStaleTranslation;
+        // [klp] {
+        /* Install the uncondi request in LQ.
+        Only loads are distinguished as uncondi. */
+        bool isUnConditional() const {return unCondiState == gem5::triStateVal::TRUE;}
+        // } [klp]
+
 
       protected:
         LSQUnit* lsqUnit() { return &_port; }
@@ -648,6 +654,10 @@ class LSQ
         uint32_t numReceivedPackets;
         RequestPtr _mainReq;
         PacketPtr _mainPacket;
+        // [klp] {
+        /* Indicating whether all sub pkts pass the tag verification.*/
+        triStateVal mainPktPassTagVeriState = gem5::triStateVal::TRUE;
+        // } [klp]
 
       public:
         SplitDataRequest(LSQUnit* port, const DynInstPtr& inst,

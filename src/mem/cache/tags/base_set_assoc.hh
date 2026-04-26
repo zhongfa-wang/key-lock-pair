@@ -46,13 +46,16 @@
 #ifndef __MEM_CACHE_TAGS_BASE_SET_ASSOC_HH__
 #define __MEM_CACHE_TAGS_BASE_SET_ASSOC_HH__
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
 
 #include "base/logging.hh"
+#include "base/trace.hh"
 #include "base/types.hh"
+#include "debug/KLPDEBUG.hh"
 #include "mem/cache/base.hh"
 #include "mem/cache/cache_blk.hh"
 #include "mem/cache/replacement_policies/base.hh"
@@ -62,6 +65,9 @@
 #include "mem/cache/tags/partitioning_policies/partition_manager.hh"
 #include "mem/packet.hh"
 #include "params/BaseSetAssoc.hh"
+// [klp] {
+#include "base/intmath.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -75,6 +81,34 @@ namespace gem5
  */
 class BaseSetAssoc : public BaseTags
 {
+  // [klp] {
+  public:
+    bool areAllSecTagsValidInCache(const CacheBlk *blk, int granuleNum) override 
+    {
+      bool areAllSecTagsValid = true;
+      for(size_t i=0; i<granuleNum; ++i){
+        areAllSecTagsValid = areAllSecTagsValid && blk->secTagValidBitsInCache[i]; 
+      }
+      return areAllSecTagsValid;
+    }
+
+    /* Store the sec tag value in cache and set it as valid.*/
+    void setSecTagInCache(const PacketPtr pkt, uint64_t tag_granularity, uint64_t val) override {
+      /* Setting sec tags always happens when an unconditional req
+      hit the L1D cache hence no need to check if the blk is valid.*/
+      CacheBlk *blk = findBlock({pkt->getAddr(), pkt->isSecure()});
+      int startIdx = extractBlkOffset(pkt->getAddr()) / tag_granularity;
+      unsigned granuleNumOfReq = gem5::divCeil(pkt->getSize(), tag_granularity);
+      assert(granuleNumOfReq <= (blkSize/tag_granularity));
+      assert(startIdx < (blkSize/tag_granularity));
+      
+      for(size_t i=startIdx ; i<(startIdx+granuleNumOfReq) ; ++i) {
+        blk->secTagPtrInCache[i] = val;
+        blk->setSecTagValid(i);
+      }
+
+    }
+  // } [klp]
   protected:
     /** The allocatable associativity of the cache (alloc mask). */
     unsigned allocAssoc;

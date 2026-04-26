@@ -42,6 +42,7 @@
 #ifndef __CPU_BASE_HH__
 #define __CPU_BASE_HH__
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -104,6 +105,13 @@ class CPUProgressEvent : public Event
 
 class BaseCPU : public ClockedObject
 {
+  // [klp] {
+  public:
+  int getParaTagWidth(){return tag_width;}
+  std::string getParaThreatModel(){return threat_model;}
+  std::string getParaTagGenSrc(){return tag_gen_src;}
+  uint64_t getWidthMask(){return tagBitMask;}
+  // } [klp]
   protected:
 
     /// Instruction count used for SPARC misc register
@@ -122,6 +130,14 @@ class BaseCPU : public ClockedObject
      * cpu core grouping (as in the case of ARM via MPIDR register)
      */
     const uint32_t _socketId;
+    // [klp] {
+    uint64_t tag_width;
+    uint64_t tag_pos;
+    uint64_t tag_granularity;
+    std::string threat_model;
+    std::string tag_gen_src;
+    uint64_t tagBitMask;
+    // } [klp]
 
     /** instruction side request id that must be placed in all requests */
     RequestorID _instRequestorId;

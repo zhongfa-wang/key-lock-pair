@@ -111,6 +111,9 @@ struct IssueStruct
 /** Struct that defines all backwards communication. */
 struct TimeStruct
 {
+    // [klp] {
+    std::vector<DynInstPtr> instsToReExec;
+    // } [klp]
     struct DecodeComm
     {
         std::unique_ptr<PCStateBase> nextPC;

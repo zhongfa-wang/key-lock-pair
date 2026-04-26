@@ -97,6 +97,13 @@ class ROB
     ROB(CPU *_cpu, const BaseO3CPUParams &params);
 
     std::string name() const;
+    
+    // [klp] {
+    /* Given a head inst, updates the instsToReExec with loads that are needed to
+    be re-executed. Returns a bool: whether writing time buffer.*/
+    bool updateInstsToReExec(std::vector<DynInstPtr>& instsToReExec, DynInstPtr head_inst, 
+                             ThreadID tid, std::string getParaThreatModel, unsigned commitWidth);
+    // } [klp]
 
     /** Sets pointer to the list of active threads.
      *  @param at_ptr Pointer to the list of active threads.

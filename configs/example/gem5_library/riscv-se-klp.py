@@ -54,6 +54,9 @@ from gem5.resources.resource import obtain_resource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
 from gem5.resources.resource import FileResource
+# [klp] {
+from m5.objects import BaseCache
+# } [klp]
 
 # Setup an arg parser
 parser = argparse.ArgumentParser(
@@ -61,19 +64,46 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument(
     "--maxinsts",
-    type=int,
-    default=None,
-    help="The maximum number of instructions under simulation."
+    type    = int,
+    default = None,
+    help    = "The maximum number of instructions under simulation."
+)
+# [klp] {
+parser.add_argument(
+    "--tag_width",
+    type    = int,
+    default = 4,
+    help    = "The width of the key."
 )
 parser.add_argument(
-    "binary",
-    type=str,
-    help="The path to the simulated binary"
+    "--tag_pos",
+    type    = int,
+    default = 4, 
+    help    = "Tag position. Controlling on which bit from LSB of the hashing result register starts the tag. "
 )
 parser.add_argument(
-    "binary_args",
-    nargs=argparse.REMAINDER,
-    help="Arguments for the simualted binary."
+    "--tag_granularity",
+    type    = int,
+    default = 16,
+    help    = "The granularity of keys/locks. One key per 16 Bytes by default. The blkSize should be divisible by this number."
+)
+parser.add_argument(
+    "--threat_model",
+    type    = str,
+    default = "spectre",
+    help    = "The threat model. Options: 'spectre' by default, 'futuristic'. "
+)
+parser.add_argument(
+    "--tag_gen_src",
+    type    = str,
+    default = "framePc",
+    help    = "The source information to generate the key. Options: 'framePc' by default, 'baseAddr'. "
+)
+# } [klp]
+parser.add_argument(
+    "cmd",
+    nargs = argparse.REMAINDER,
+    help  = "Path to and arguments for the simualted binary."
 )
 args = parser.parse_args()
 
@@ -88,38 +118,52 @@ requires(isa_required=ISA.RISCV)
 #     l1d_size="32KiB", l1i_size="32KiB", l2_size="512KiB"
 # )
 cache_hierarchy = PrivateL1PrivateL2SharedL3CacheHierarchy(
-        l1i_size= "32KiB",
-        l1i_assoc= 8,
-        l1d_size= "32KiB",
-        l1d_assoc= 8,
-        l2_size= "512KiB",
-        l2_assoc= 8,
-        l3_size= "2MiB",
-        l3_assoc= 16,)
+        l1i_size  = "32KiB",
+        l1i_assoc = 8,
+        l1d_size  = "32KiB",
+        l1d_assoc = 8,
+        l2_size   = "512KiB",
+        l2_assoc  = 8,
+        l3_size   = "2MiB",
+        l3_assoc  = 16,
+        # [klp] {
+        tag_width       = args.tag_width,
+        tag_pos         = args.tag_pos,
+        tag_granularity = args.tag_granularity
+        # } [klp]
+        )
 
 # Setup the system memory.
 memory = SingleChannelDDR3_1600()
 
 # Setup a single core Processor.
 processor = SimpleProcessor(
-    cpu_type=CPUTypes.O3, #O3, ATOMIC 
-    isa=ISA.RISCV, 
-    num_cores=1
+    cpu_type  = CPUTypes.O3, #O3, ATOMIC 
+    isa       = ISA.RISCV, 
+    num_cores = 1
 )
 
 # Setup the board.
 board = RiscvBoard(
-    clk_freq="1GHz",
-    processor=processor,
-    memory=memory,
-    cache_hierarchy=cache_hierarchy,
+    clk_freq        = "1GHz",
+    processor       = processor,
+    memory          = memory,
+    cache_hierarchy = cache_hierarchy,
 )
+# [klp] {
+# Pass parameters to BaseCPU
+for core in processor.get_cores():
+    core.core.tag_width       = args.tag_width
+    core.core.tag_pos         = args.tag_pos
+    core.core.threat_model    = args.threat_model
+    core.core.tag_gen_src     = args.tag_gen_src
+    core.core.tag_granularity = args.tag_granularity
+# } [klp]
 
 # Set the Syscall Emulation (SE) workload.
 board.set_se_binary_workload(
-    # obtain_resource("riscv-hello")
-    binary = FileResource(args.binary),
-    arguments = args.binary_args
+    binary    = FileResource(args.cmd[0]),
+    arguments = args.cmd[1:]
 )
 
 simulator = Simulator(board=board)

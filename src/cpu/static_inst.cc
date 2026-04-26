@@ -28,13 +28,46 @@
 
 #include "cpu/static_inst.hh"
 
+#include <cstdint>
 #include <iostream>
 
+#include "base/trace.hh"
 #include "cpu/thread_context.hh"
+// [klp] {
+#include "cpu/exec_context.hh"
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
 
+// [klp] {
+/* Hashing. Currently using xor by bit as the hashing function. */
+uint64_t 
+StaticInst::hashing(uint64_t val1, uint64_t val2) const{
+  return (val1 ^ val2);
+}
+
+/* Generate security tag return a uint32_t value */
+uint64_t 
+StaticInst::genSecTagFramePC(ExecContext *xc, uint64_t spRegVal) const{
+  // uint64_t tagVal = 0x0;
+  uint64_t tagVal;
+  BaseCPU *cpu = xc->tcBase()->getCpuPtr();
+  Addr pc = xc->pcState().instAddr();
+  std::string tagGenSrc = cpu->getParaTagGenSrc();
+  tagVal = hashing(spRegVal,pc) & cpu->getWidthMask(); // Set the instruction tag
+  /* MSB = 1 means it's a legal sec tag value. */
+  tagVal |= 0x8000'0000'0000'0000;
+  DPRINTF(KLPDEBUG, "Generating the secure tag of the inst. Inst assembly: %s, inst VA: %x, sp reg val: %x, mask: %x, secure tag value: %x.\n",
+                    disassemble(pc,0),
+                    pc,
+                    spRegVal,
+                    cpu->getWidthMask(),
+                    tagVal);
+  return tagVal;
+}
+// } [klp]
 StaticInstPtr
 StaticInst::fetchMicroop(MicroPC upc) const
 {

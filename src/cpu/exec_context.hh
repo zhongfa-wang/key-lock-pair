@@ -71,7 +71,15 @@ namespace gem5
 class ExecContext
 {
   public:
-
+    // [klp] {
+    protected:
+    /* The variable that stores the value of the sec tag val. */
+    uint64_t secTagInDynInst;
+    public:
+    /* Sets and gets the secTagInDynInst */
+    void setSecTagInDynInst(uint64_t val) {secTagInDynInst = val;}
+    uint64_t getSecTagInDynInst() {return secTagInDynInst;}
+    // } [klp]
     virtual RegVal getRegOperand(const StaticInst *si, int idx) = 0;
     virtual void getRegOperand(const StaticInst *si, int idx, void *val) = 0;
     virtual void *getWritableRegOperand(const StaticInst *si, int idx) = 0;

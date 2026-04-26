@@ -101,6 +101,13 @@ class BaseCPU(ClockedObject):
     system = Param.System(Parent.any, "system object")
     cpu_id = Param.Int(-1, "CPU identifier")
     socket_id = Param.Unsigned(0, "Physical Socket identifier")
+    # [klp] {
+    tag_width       = Param.UInt64(4, "Tag width, no more than 31. The c_flwsp is hard coded as using sp_uw (32 bits). The length of the tag width shouldn't be larger than that. The MSB bit is meta data.")
+    tag_pos         = Param.UInt64(4, "Tag position. Controlling on which bit from LSB of the hashing result register starts the tag. ")
+    tag_granularity = Param.UInt64(16, "The granularity of tags. One key per 16 Bytes by default. The blkSize should be divisible by this number.")
+    threat_model    = Param.String("spectre", "Threat model. Options: 'spectre' (default), 'futuristic'.")
+    tag_gen_src     = Param.String("framePc", "Source info to generate key. Options: 'framePc' (default),'baseAddr'.")
+    # } [klp]
     numThreads = Param.Unsigned(1, "number of HW thread contexts")
     pwr_gating_latency = Param.Cycles(
         300,

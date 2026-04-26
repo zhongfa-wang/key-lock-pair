@@ -41,8 +41,9 @@ Import('*')
 
 SimObject('Cache.py', sim_objects=[
     'WriteAllocator', 'BaseCache', 'Cache', 'NoncoherentCache'],
-    # [klp] register the enum CacheLevel
+    # [klp] register the enum CacheLevel {
     enums=['Clusivity','CacheLevel'])
+    # } [klp]
 
 Source('base.cc')
 Source('cache.cc')

@@ -47,7 +47,11 @@ Load::generateDisassembly(Addr pc, const loader::SymbolTable *symtab) const
 {
     std::stringstream ss;
     ss << mnemonic << ' ' << registerName(destRegIdx(0)) << ", " <<
-        offset << '(' << registerName(srcRegIdx(0)) << ')';
+    // [klp] {
+    /* Sp reg occupies the no.0 src reg for all load insts in klp's design. 
+      The correct reg number used by disassemble function is 1. */
+        offset << '(' << registerName(srcRegIdx(1)) << ')';
+    // } [klp]
     return ss.str();
 }
 

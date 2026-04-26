@@ -45,7 +45,13 @@
 
 namespace gem5
 {
-
+// [klp] {
+enum triStateVal : uint8_t{
+  INIT  = 0x0,
+  TRUE  = 0x1,
+  FALSE = 0x2,
+};
+// } [klp]
 /** Statistics counter type.  Not much excuse for not using a 64-bit
  * integer here, but if you're desperate and only run short
  * simulations you could make this 32 bits.

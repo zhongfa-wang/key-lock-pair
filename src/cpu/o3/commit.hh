@@ -131,6 +131,15 @@ class Commit
     void processTrapEvent(ThreadID tid);
 
   public:
+    // [klp] {
+    /* Fill the insts to be re-executed unconditionally into 
+    the toIEW after the rob head is committed (depending on
+    the threat model). */
+    void resolveInstsByThreatModel();
+    /*  scrapped 
+    void resolveInstsByThreatModel(DynInstPtr head_inst, ThreadID tid);*/
+
+    // } [klp]
     /** Construct a Commit with the given parameters. */
     Commit(CPU *_cpu, const BaseO3CPUParams &params);
 
@@ -468,6 +477,16 @@ class Commit
          * commit.
          */
         statistics::Scalar commitSquashedInsts;
+        // [klp] {
+        /** Stat for the total number of the tag verification that 
+         * proved to be correct.
+         */
+        statistics::Scalar tagVeriCorrect;
+         /** Stat for the total number of the tag verification that 
+          * proved to be wrong.
+          */
+        statistics::Scalar tagVeriNotCorrect;
+        // } [klp]
         /** Stat for the total number of times commit has had to stall due
          * to a non-speculative instruction reaching the head of the ROB.
          */

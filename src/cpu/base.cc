@@ -128,6 +128,11 @@ CPUProgressEvent::description() const
 
 BaseCPU::BaseCPU(const Params &p, bool is_checker)
     : ClockedObject(p), instCnt(0), _cpuId(p.cpu_id), _socketId(p.socket_id),
+      // [klp] {
+      tag_width(p.tag_width), tag_pos(p.tag_pos), tag_granularity(p.tag_granularity),
+      threat_model(p.threat_model), tag_gen_src(p.tag_gen_src),
+      tagBitMask(p.system->initWidthMask(p.tag_width, p.tag_pos)), 
+      // } [klp]
       _instRequestorId(p.system->getRequestorId(this, "inst")),
       _dataRequestorId(p.system->getRequestorId(this, "data")),
       _taskId(context_switch_task_id::Unknown), _pid(invldPid),

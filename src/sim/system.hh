@@ -42,8 +42,10 @@
 #ifndef __SYSTEM_HH__
 #define __SYSTEM_HH__
 
+#include <cstdint>
 #include <set>
 #include <string>
+#include <sys/types.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -432,7 +434,12 @@ class System : public SimObject, public PCEventScope
     std::string stripSystemName(const std::string& requestor_name) const;
 
   public:
-
+    // [klp] {
+    // Initializing the tagBitMask
+    inline uint64_t initWidthMask(uint64_t width, uint64_t pos){
+      return (~(0xFFFF'FFFF'FFFF'FFFF<<width)) << pos; // Set the 3rd - 3rd+width bits of the mask as 1 and others as 0.
+    }
+    // } [klp]
     /**
      * Request an id used to create a request object in the system. All objects
      * that intend to issues requests into the memory system must request an id
