@@ -226,3 +226,15 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         )
         self.iocache.mem_side = self.membus.cpu_side_ports
         self.iocache.cpu_side = board.get_mem_side_coherent_io_port()
+
+class NoPrefetchP1P2S3CacheHierarchy(PrivateL1PrivateL2SharedL3CacheHierarchy):
+    def incorporate_cache(self, board):
+        super().incorporate_cache(board)
+        if hasattr(self, "l1dcaches"):
+            for cache in self.l1dcaches:
+                cache.prefetcher = NULL
+        if hasattr(self, "l2caches"):
+            for cache in self.l2caches:
+                cache.prefetcher = NULL
+        if hasattr(self, "l3cache"):
+            self.l3cache.prefetcher = NULL

@@ -1,51 +1,10 @@
-# Copyright (c) 2021 The Regents of the University of California
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are
-# met: redistributions of source code must retain the above copyright
-# notice, this list of conditions and the following disclaimer;
-# redistributions in binary form must reproduce the above copyright
-# notice, this list of conditions and the following disclaimer in the
-# documentation and/or other materials provided with the distribution;
-# neither the name of the copyright holders nor the names of its
-# contributors may be used to endorse or promote products derived from
-# this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-"""
-This example runs a simple linux boot. It uses the 'riscv-disk-img' resource.
-It is built with the sources in `src/riscv-fs` in [gem5 resources](
-https://github.com/gem5/gem5-resources).
-
-Characteristics
----------------
-
-* Runs exclusively on the RISC-V ISA with the classic caches
-* Assumes that the kernel is compiled into the bootloader
-* Automatically generates the DTB file
-* Will boot but requires a user to login using `m5term` (username: `root`,
-  password: `root`)
-"""
 import sys
 import argparse
 from gem5.components.boards.riscv_board import RiscvBoard
 from gem5.components.cachehierarchies.classic.private_l1_private_l2_walk_cache_hierarchy import (
     PrivateL1PrivateL2WalkCacheHierarchy,
 )
-from gem5.components.cachehierarchies.classic.private_l1_private_l2_shared_l3_cache_hierarchy import(
-    PrivateL1PrivateL2SharedL3CacheHierarchy,)
+from gem5.components.cachehierarchies.classic.private_l1_private_l2_shared_l3_cache_hierarchy import *
 from gem5.components.memory import SingleChannelDDR3_1600
 from gem5.components.processors.cpu_types import CPUTypes
 from gem5.components.processors.simple_processor import SimpleProcessor
@@ -55,7 +14,7 @@ from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
 from gem5.resources.resource import FileResource
 # [klp] {
-from m5.objects import BaseCache, NULL  
+from m5.objects import BaseCache, NULL
 # } [klp]
 
 # Setup an arg parser
@@ -101,6 +60,18 @@ parser.add_argument(
 )
 # } [klp]
 parser.add_argument(
+    "--cpu",
+    type    = str,
+    choices = ["atomic", "o3"],
+    default = "o3",
+    help    = "Select the CPU model. Use 'atomic' for fast-forwarding, 'o3' for detailed simulation."
+)
+parser.add_argument(
+    "--prog_interval",
+    type    = int,
+    default = 1000,
+)
+parser.add_argument(
     "cmd",
     nargs = argparse.REMAINDER,
     help  = "Path to and arguments for the simualted binary."
@@ -113,19 +84,7 @@ requires(isa_required=ISA.RISCV)
 # Setup the cache hierarchy.
 # For classic, PrivateL1PrivateL2 and NoCache have been tested.
 # For Ruby, MESI_Two_Level and MI_example have been tested.
-
-class NoPrefetchP1P2S3CacheHierarchy(PrivateL1PrivateL2SharedL3CacheHierarchy):
-    def incorporate_cache(self, board):
-        super().incorporate_cache(board)
-        if hasattr(self, "l1dcaches"):
-            for cache in self.l1dcaches:
-                cache.prefetcher = NULL
-        if hasattr(self, "l2caches"):
-            for cache in self.l2caches:
-                cache.prefetcher = NULL
-        if hasattr(self, "l3cache"):
-            self.l3cache.prefetcher = NULL
-
+            
 cache_hierarchy = NoPrefetchP1P2S3CacheHierarchy(
         l1i_size  = "32KiB",
         l1i_assoc = 8,
@@ -144,10 +103,11 @@ cache_hierarchy = NoPrefetchP1P2S3CacheHierarchy(
 
 # Setup the system memory.
 memory = SingleChannelDDR3_1600()
-
-# Setup a single core Processor.
+# checkpoint {
+selected_cpu_type = CPUTypes.ATOMIC if args.cpu == "atomic" else CPUTypes.O3
+# } checkpoint
 processor = SimpleProcessor(
-    cpu_type  = CPUTypes.O3, #O3, ATOMIC 
+    cpu_type  = selected_cpu_type, #O3, ATOMIC 
     isa       = ISA.RISCV, 
     num_cores = 1
 )
@@ -167,6 +127,8 @@ for core in processor.get_cores():
     core.core.threat_model    = args.threat_model
     core.core.tag_gen_src     = args.tag_gen_src
     core.core.tag_granularity = args.tag_granularity
+    # if args.prog_interval > 0:
+    #     core.core.progress_interval = str(args.prog_interval)
 # } [klp]
 
 # Set the Syscall Emulation (SE) workload.
@@ -175,11 +137,23 @@ board.set_se_binary_workload(
     arguments = args.cmd[1:]
 )
 
-simulator = Simulator(board=board)
+# M5 ops handler
+from gem5.simulate.exit_event import ExitEvent
+def exit_on_checkpoint():
+    yield True
+
+simulator = Simulator(
+    board=board,
+    on_exit_event={
+        ExitEvent.CHECKPOINT: exit_on_checkpoint()
+    }
+)
+# simulator = Simulator(board=board)
 
 if args.maxinsts:
     print(f"Scheduling simulation exit after {args.maxinsts} instructions.")
     simulator.schedule_max_insts(args.maxinsts)
+
 
 print("Beginning simulation!")
 simulator.run()
