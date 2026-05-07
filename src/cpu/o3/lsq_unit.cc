@@ -41,6 +41,7 @@
 
 #include "cpu/o3/lsq_unit.hh"
 #include <cassert>
+#include <cstdint>
 
 #include "arch/generic/debugfaults.hh"
 #include "base/str.hh"
@@ -113,8 +114,19 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
     LSQRequest *request = dynamic_cast<LSQRequest *>(pkt->senderState);
     DynInstPtr inst = request->instruction();
     // [klp] {
-    if(!request->isUnConditional() && inst->isLoad()){
-      inst->isSpecRespRecvd = true;}
+    if(!request->isUnConditional() && inst->isKlpLoad()){
+      inst->isSpecRespRecvd = true;
+      DPRINTF(KLPDEBUG, "[LSQUnit] Klp resp pkt received. Pass tag veri: %s, inst VA: 0x%x, inst SN:%llu, inst assembly: %s, inst uncondi state: %s, "
+                        "target addr: 0x%x, size: %llu, has data: %s.\n",
+                  pkt->passSecTagVeri()?"True":"False",
+                  inst->pcState().instAddr(),
+                  inst->seqNum,
+                  inst->staticInst->disassemble(inst->pcState().instAddr(),0),
+                  (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False",
+                  pkt->req->getVaddr(),
+                  pkt->getSize(),
+                  pkt->hasData()?"True":"False");
+    }
     // } [klp]
     // hardware transactional memory
     // sanity check
@@ -175,12 +187,13 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
     if (inst->isKlpLoad()) {
       inst->setPassTagVeriDynInstCarrier(pkt->getPassSecTagVeri());
       if (!pkt->passSecTagVeri()){
+        DPRINTF(KLPDEBUG, "[LSQUnit] Key veri failed, sending it to commit. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, unconditional state: %s.\n",
+                inst->pcState().instAddr(),
+                inst->seqNum,
+                inst->staticInst->disassemble(inst->pcState().instAddr(),0),
+                (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False");
         return;
       }
-      DPRINTF(KLPDEBUG,"The load key verification failed, sending it to commit. Inst va: %x, Inst assembly: %s, unconditional state: %s.\n",
-              inst->pcState().instAddr(),
-              inst->staticInst->disassemble(inst->pcState().instAddr(),0),
-              (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False");
     }
     // } [klp]
 

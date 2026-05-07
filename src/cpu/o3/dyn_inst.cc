@@ -327,7 +327,10 @@ void
 DynInst::setSquashed()
 {
     status.set(Squashed);
-
+    // [klp] {
+      DPRINTF(KLPDEBUG, "[DynInst] Setting inst squashed. Inst VA: 0x%x, inst SN:%llu.\n",
+        this->pcState().instAddr(), this->seqNum);
+    // } [klp]
     if (!isPinnedRegsRenamed() || isPinnedRegsSquashDone())
         return;
 
@@ -417,8 +420,9 @@ DynInst::initiateMemRead(Addr addr, unsigned size, Request::Flags flags,
 {
     assert(byte_enable.size() == size);
     // [klp] {
-    DPRINTF(KLPDEBUG, "Initiate mem read. Inst VA: %x, inst assembly: %s, target addr: %x.\n",
+    DPRINTF(KLPDEBUG, "[DynInst] Initiate mem read. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, target addr: 0x%x.\n",
                       this->pcState().instAddr(),
+                      this->seqNum,
                       staticInst->disassemble(pcState().instAddr(),0),
                       addr);
     // } [klp]

@@ -172,22 +172,39 @@ BaseCache::verifySecTagInCache(const PacketPtr pkt)
   unsigned granuleNumOfReq = gem5::divCeil(pkt->getSize(), tag_granularity);
   assert(granuleNumOfReq <= (blkSize/tag_granularity));
 
+  
+  DPRINTF(KLPDEBUG, "[BaseCache] Veri starts. Target addr: 0x%x, "
+                          "request size: 0x%x, startIdx: %d, granuleNumOfReq:%d.\n",
+          pkt->req->getVaddr(),
+          pkt->getSize(),
+          startIdx,
+          granuleNumOfReq);
   if(!tags->areSecTagsValidInCache(blk, granuleNumOfReq, startIdx)) {
+    DPRINTF(KLPDEBUG, "[BaseCache] Sec tag invalid. Target addr: 0x%x, "
+                            " request size: 0x%x.\n",
+            pkt->req->getVaddr(),
+            pkt->getSize());
     return gem5::triStateVal::FALSE;
   } else {
     bool areAllSecTagsMatch = true;
     /* Validate if all sec tags match. */
-    for(size_t i=startIdx ; i<granuleNumOfReq ; ++i) {
+    for(size_t i=0 ; i<granuleNumOfReq ; ++i) {
       areAllSecTagsMatch = areAllSecTagsMatch && 
-      ((pkt->getSecTag() & tagBitMask) == ((blk->secTagPtrInCache[i]) & tagBitMask));
+      ((pkt->getSecTag() & tagBitMask) == ((blk->secTagPtrInCache[startIdx+i]) & tagBitMask));
+      
+      DPRINTF(KLPDEBUG, "[BaseCache] Performing verification for %dth granule. Target addr: 0x%x,"
+                            " request size: 0x%x, cache sec tag: 0x%x, pkt sec tag: 0x%x.\n",
+              i,
+              pkt->req->getVaddr(),
+              pkt->getSize(),
+              ((blk->secTagPtrInCache[startIdx]) & tagBitMask),
+              (pkt->getSecTag() & tagBitMask));
     }
-
-    DPRINTF(KLPDEBUG, "Verifing secure tag in cache: inst va: %x, target addr: %x, \
-                            request size: %x, veri result: %s.\n",
-            pkt->req->hasPC() ? pkt->req->getPC() : 0x00000000,
-            pkt->getAddr(),
+    DPRINTF(KLPDEBUG, "[BaseCache] Veri finished. Target addr: 0x%x, request size: 0x%x, "
+                          "veri result: %s.\n",
+            pkt->req->getVaddr(),
             pkt->getSize(),
-            areAllSecTagsMatch);
+            areAllSecTagsMatch?"Pass":"Fail");
     /* Update stats */
     stats.cmdStats(pkt).tagVeriInCacheNum++;
     if(areAllSecTagsMatch) {
@@ -1557,6 +1574,11 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                 assert(secTagVeriResult != gem5::triStateVal::INIT);
                 /* If the tag verifies to pass, then the cache performs as normal. */
                 pkt->setPassSecTagVeri(secTagVeriResult);
+                DPRINTF(KLPDEBUG, "[BaseCache] Hit on L1D. Target addr: 0x%x, "
+                                        "request size: 0x%x, veri result: %s.\n",
+                        pkt->req->getVaddr(),
+                        pkt->getSize(),
+                        pkt->passSecTagVeri()?"Pass":"Fail");
                 /* If not, the cache sets the flag in packet as not pass and returns
                 directly. No need to satisfy the request. */
                 if (secTagVeriResult == gem5::triStateVal::FALSE) {

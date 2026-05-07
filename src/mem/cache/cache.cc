@@ -424,6 +424,10 @@ Cache::handleTimingReqMiss(PacketPtr pkt, CacheBlk *blk, Tick forward_time,
         assert(!pkt->req->isUncacheable());
         PacketPtr pf = nullptr;
         /* Make a copy of the pkt for the convenience of the next swpf when MSHR misses. */
+        DPRINTF(KLPDEBUG, "[Cache] L1D miss. Making swpf. Target addr: 0x%x, "
+          "request size: 0x%x.\n",
+          pkt->req->getVaddr(),
+                pkt->getSize());
         if(!mshr){
           RequestPtr req = std::make_shared<Request>(pkt->req->getPaddr(),
                                                   pkt->req->getSize(),
@@ -441,8 +445,6 @@ Cache::handleTimingReqMiss(PacketPtr pkt, CacheBlk *blk, Tick forward_time,
         pkt->setPassSecTagVeri(gem5::triStateVal::FALSE);
         cpuSidePort.schedTimingResp(pkt, request_time);
         pkt = pf;
-        DPRINTF(KLPDEBUG, "Miss on L1D. Sending control pkt back to the core and swpf to lower caches: pkt obj addr: %x.\n",
-                pkt); 
       }
     }
     // } [klp]
@@ -453,6 +455,13 @@ void
 Cache::recvTimingReq(PacketPtr pkt)
 {
     DPRINTF(CacheTags, "%s tags:\n%s\n", __func__, tags->print());
+    // [klp] {
+    if(pkt->req->hasVaddr() && pkt->isRead()){
+      DPRINTF(KLPDEBUG, "[Cache] RecvTimingReq. Target addr: 0x%x, request size: 0x%x, uncondi state: %s.\n",
+              pkt->req->getVaddr(),
+              pkt->getSize(),
+              pkt->isUnCondiReExe()?"True":"False");}
+    // } [klp]
 
     promoteWholeLineWrites(pkt);
 

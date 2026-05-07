@@ -59,9 +59,9 @@ StaticInst::genSecTagFramePC(ExecContext *xc, uint64_t spRegVal) const{
   tagVal = hashing(spRegVal,pc) & cpu->getWidthMask(); // Set the instruction tag
   /* MSB = 1 means it's a legal sec tag value. */
   tagVal |= 0x8000'0000'0000'0000;
-  DPRINTF(KLPDEBUG, "Generating the secure tag of the inst. Inst assembly: %s, inst VA: %x, sp reg val: %x, mask: %x, secure tag value: %x.\n",
-                    disassemble(pc,0),
+  DPRINTF(KLPDEBUG, "[StaticInst] Generating the secure tag of the inst. Inst VA: 0x%x, inst assembly: %s, sp reg val: 0x%x, mask: 0x%x, secure tag value: 0x%x.\n",
                     pc,
+                    disassemble(pc,0),
                     spRegVal,
                     cpu->getWidthMask(),
                     tagVal);

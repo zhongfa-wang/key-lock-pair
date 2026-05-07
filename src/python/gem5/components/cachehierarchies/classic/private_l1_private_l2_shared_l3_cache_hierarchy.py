@@ -56,6 +56,7 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         tag_width: int,
         tag_pos: int,
         tag_granularity: int,
+        threat_model: str,
         # } [klp]
         l1d_size: str,
         l1i_size: str,
@@ -85,6 +86,7 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         self._tag_width       = tag_width
         self._tag_pos         = tag_pos
         self._tag_granularity = tag_granularity
+        self._threat_model    = threat_model
         # } [klp]
 
         self.membus = membus if membus else self._get_default_membus()
@@ -111,6 +113,7 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
                 tag_width       = self._tag_width,
                 tag_pos         = self._tag_pos,
                 tag_granularity = self._tag_granularity,
+                threat_model    = self._threat_model,
                 # } [klp]
                 size=self._l1i_size,
                 assoc=self._l1i_assoc,
@@ -124,6 +127,7 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
                 tag_width       = self._tag_width,
                 tag_pos         = self._tag_pos,
                 tag_granularity = self._tag_granularity,
+                threat_model    = self._threat_model,
                 # } [klp]
                 size=self._l1d_size, 
                 assoc=self._l1d_assoc)
@@ -135,6 +139,7 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
                 tag_width       = self._tag_width,
                 tag_pos         = self._tag_pos,
                 tag_granularity = self._tag_granularity,
+                threat_model    = self._threat_model,
                 # } [klp]
                 size=self._l2_size, 
                 assoc=self._l2_assoc)
@@ -151,6 +156,7 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
                 tag_width       = self._tag_width,
                 tag_pos         = self._tag_pos,
                 tag_granularity = self._tag_granularity,
+                threat_model    = self._threat_model,
                 # } [klp]
             size=self._l3_size,
             assoc=self._l3_assoc)
@@ -161,6 +167,7 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
                 tag_width       = self._tag_width,
                 tag_pos         = self._tag_pos,
                 tag_granularity = self._tag_granularity,
+                threat_model    = self._threat_model,
                 # } [klp]
                 size="8KiB", 
                 writeback_clean=False)
@@ -173,6 +180,7 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
                 tag_width       = self._tag_width,
                 tag_pos         = self._tag_pos,
                 tag_granularity = self._tag_granularity,
+                threat_model    = self._threat_model,
                 # } [klp]
                 size="8KiB", 
                 writeback_clean=False)

@@ -44,21 +44,22 @@ class L2Cache(Cache):
     def __init__(
         self,
         size: str,
-        assoc: int = 16,
-        tag_latency: int = 10,
-        data_latency: int = 10,
+        assoc: int            = 16,
+        tag_latency: int      = 10,
+        data_latency: int     = 10,
         response_latency: int = 1,
-        mshrs: int = 20,
-        tgts_per_mshr: int = 12,
+        mshrs: int            = 20,
+        tgts_per_mshr: int    = 12,
         writeback_clean: bool = False,
-        clusivity: Clusivity = "mostly_incl",
+        clusivity: Clusivity  = "mostly_incl",
         PrefetcherCls: Type[BasePrefetcher] = StridePrefetcher,
         # [klp] {
         # Adding CacheLevel parameter
-        cache_level = 'L2',
-        tag_width: int = 4,
-        tag_pos: int = 4,
-        tag_granularity: int = 16
+        cache_level           = 'L2',
+        tag_width: int        = 4,
+        tag_pos: int          = 4,
+        tag_granularity: int  = 16,
+        threat_model          = 'spectre'
         # } [klp]
     ):
         super().__init__()
@@ -78,5 +79,6 @@ class L2Cache(Cache):
         self.tag_width        = tag_width
         self.tag_pos          = tag_pos
         self.tag_granularity  = tag_granularity
+        self.threat_model     = threat_model
         # } [klp]
 

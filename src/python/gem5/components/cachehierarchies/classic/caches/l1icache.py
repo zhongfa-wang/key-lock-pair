@@ -46,20 +46,21 @@ class L1ICache(Cache):
     def __init__(
         self,
         size: str,
-        assoc: int = 8,
-        tag_latency: int = 1,
-        data_latency: int = 1,
+        assoc: int            = 8,
+        tag_latency: int      = 1,
+        data_latency: int     = 1,
         response_latency: int = 1,
-        mshrs: int = 16,
-        tgts_per_mshr: int = 20,
+        mshrs: int            = 16,
+        tgts_per_mshr: int    = 20,
         writeback_clean: bool = True,
         PrefetcherCls: Type[BasePrefetcher] = StridePrefetcher,
         # [klp] {
         # Adding CacheLevel parameter
-        cache_level = 'L1I',
-        tag_width: int = 4,
-        tag_pos: int = 4,
-        tag_granularity: int = 16
+        cache_level           = 'L1I',
+        tag_width: int        = 4,
+        tag_pos: int          = 4,
+        tag_granularity: int  = 16,
+        threat_model          = 'spectre'
         # } [klp]
     ):
         super().__init__()
@@ -78,5 +79,6 @@ class L1ICache(Cache):
         self.tag_width        = tag_width
         self.tag_pos          = tag_pos
         self.tag_granularity  = tag_granularity
+        self.threat_model     = threat_model
         # } [klp]
 

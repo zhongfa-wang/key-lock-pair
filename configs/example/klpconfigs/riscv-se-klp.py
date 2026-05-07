@@ -91,7 +91,7 @@ parser.add_argument(
     "--threat_model",
     type    = str,
     default = "spectre",
-    help    = "The threat model. Options: 'spectre' by default, 'futuristic'. "
+    help    = "Threat model. Options: 'spectre' (default), 'futuristic', 'disable'." # Disable means sec tag verification always return true.
 )
 parser.add_argument(
     "--tag_gen_src",
@@ -138,7 +138,8 @@ cache_hierarchy = NoPrefetchP1P2S3CacheHierarchy(
         # [klp] {
         tag_width       = args.tag_width,
         tag_pos         = args.tag_pos,
-        tag_granularity = args.tag_granularity
+        tag_granularity = args.tag_granularity,
+        threat_model    = args.threat_model
         # } [klp]
         )
 

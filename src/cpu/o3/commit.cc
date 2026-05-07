@@ -965,6 +965,11 @@ Commit::commitInsts()
 
             DPRINTF(Commit, "Retiring squashed instruction from "
                     "ROB.\n");
+            // [klp] {
+            DPRINTF(KLPDEBUG, "[Commit] Retiring squashed instruction. Inst VA: 0x%x, inst sn:%llu, inst squashed state:%s",
+                    head_inst->pcState().instAddr(),head_inst->seqNum,
+                    head_inst->isSquashed()?"True":"False");
+            // } [klp]
 
             rob->retireHead(commit_thread);
 

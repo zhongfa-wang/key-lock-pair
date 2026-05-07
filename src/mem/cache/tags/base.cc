@@ -88,17 +88,16 @@ bool
 BaseTags::areSecTagsValidInCache(const CacheBlk *blk, int granuleNum, int startIdx)
 {
   bool areAllSecTagsValid = true;
-  for(size_t i=startIdx; i<granuleNum; ++i)
+  for(size_t i=0; i<granuleNum; ++i)
   {
-    areAllSecTagsValid = areAllSecTagsValid && blk->secTagValidBitsInCache[i];
-    DPRINTF(KLPDEBUG, "Checking secure tag's validity: blk obj: %x, index: %x, granule number: %x, \
-            validity: %s.\n",
-            blk,
+    areAllSecTagsValid = areAllSecTagsValid && blk->secTagValidBitsInCache[startIdx+i];
+    DPRINTF(KLPDEBUG, "[BaseTag] Checking secure tag's validity: index: 0x%x, granule number: 0x%x,"
+            "validity: %s.\n",
             i,
             granuleNum,
             blk->secTagValidBitsInCache[i]?"true":"false");
   }
-  DPRINTF(KLPDEBUG, "The result of the validity check of blk %x is %s",
+  DPRINTF(KLPDEBUG, "[BaseTag] The result of the validity check of blk 0x%x is %s.\n",
           blk,
           areAllSecTagsValid?"true":"false");
   return areAllSecTagsValid;
@@ -115,9 +114,9 @@ BaseTags::setSecTagInCache(const PacketPtr pkt, uint64_t tag_granularity, uint64
   assert(granuleNumOfReq <= (blkSize/tag_granularity));
   assert(startIdx < granuleNumOfReq);
   
-  for(size_t i=startIdx ; i<granuleNumOfReq ; ++i) {
-    blk->secTagPtrInCache[i] = val;
-    blk->setSecTagValid(i);
+  for(size_t i=0 ; i<granuleNumOfReq ; ++i) {
+    blk->secTagPtrInCache[startIdx+i] = val;
+    blk->setSecTagValid(startIdx+i);
   }
 
 }

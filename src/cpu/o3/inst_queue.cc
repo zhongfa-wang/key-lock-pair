@@ -782,24 +782,22 @@ InstructionQueue::scheduleReadyInsts()
           && it_uncondi != it_uncondi_end){
             assert(it_uncondi->get() != nullptr && "Instruction pointer is null!");
             assert(it_uncondi->get()->getUncondiState() == gem5::triStateVal::TRUE &&
-                   it_uncondi->get()->isKlpLoad() /* &&
-                   it_uncondi->get()->getPassTagVeriDynInstCarrier() == gem5::triStateVal::FALSE */);
-            // it_uncondi->get()->setPassTagVeriDynInstCarrier(gem5::triStateVal::INIT);
+                   it_uncondi->get()->isKlpLoad());
             assert(!it_uncondi->get()->isReScheduled);
             if(!it_uncondi->get()->isSquashed()){
               it_uncondi->get()->setCanIssue();
               addIfReady(it_uncondi->get());
             }
             it_uncondi->get()->isReScheduled = true;
-            DPRINTF(KLPDEBUG, "Reexecuting inst. Adding it to the readyList. Inst addr: %x, inst assembly: %x, unconditiona state: %s.\n",
+            DPRINTF(KLPDEBUG, "[IQ] Reexecuting inst. Adding it to the readyList. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, uncondi state: %s.\n",
                     it_uncondi->get()->pcState().instAddr(),
+                    it_uncondi->get()->seqNum,
                     it_uncondi->get()->staticInst->disassemble(it_uncondi->get()->pcState().instAddr()),
-                    it_uncondi->get()->getUncondiState()
+                    it_uncondi->get()->isUncondi()?"True":"False"
                     );
             ++it_uncondi;
             ++total_issued;
     }
-    fromCommit->instsToReExec.clear();
     // } [klp]
     ListOrderIt order_it = listOrder.begin();
     ListOrderIt order_end_it = listOrder.end();

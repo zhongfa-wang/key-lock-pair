@@ -135,8 +135,10 @@ ROB::updateInstsToReExec(std::vector<DynInstPtr>& instsToReExec,
                         std::string getParaThreatModel,
                         unsigned commitWidth){
   bool wroteToTimeBuffer = false;
+  instsToReExec.clear();
 
   if(cpu->getParaThreatModel() == std::string("spectre")){
+    unsigned resolvedNum = 0;
     if(!head_inst->mispredicted()){
       #include <algorithm>
       if(threadEntries[tid] != 0){
@@ -149,9 +151,8 @@ ROB::updateInstsToReExec(std::vector<DynInstPtr>& instsToReExec,
           ++it;
 
         for( ; it != instList[tid].end(); ++it){
-          if(it->get()->isControl()){
-            break;
-          }
+          if(it->get()->isControl()) break;
+          if(resolvedNum >= commitWidth) break;
           
           if( it->get()->isKlpLoad() && 
               it->get()->getPassTagVeriDynInstCarrier() == gem5::triStateVal::FALSE && 
@@ -165,8 +166,9 @@ ROB::updateInstsToReExec(std::vector<DynInstPtr>& instsToReExec,
             it->get()->setUncondiState(gem5::triStateVal::TRUE);
             it->get()->setPassTagVeriDynInstCarrier(gem5::triStateVal::INIT);
             instsToReExec.push_back(it->get());
+            ++resolvedNum;
             wroteToTimeBuffer = true;
-            DPRINTF(KLPDEBUG,"Adding insts in ROB to re execution list. Inst addr: %x, seqNum: %d, inst assembly: %s, unconditional state: %s.\n",
+            DPRINTF(KLPDEBUG,"[ROB] Adding insts in ROB to re execution list. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, unconditional state: %s.\n",
                     it->get()->pcState().instAddr(),
                     it->get()->seqNum,
                     it->get()->staticInst->disassemble(it->get()->pcState().instAddr(),0),
@@ -328,6 +330,11 @@ ROB::retireHead(ThreadID tid)
     DPRINTF(ROB, "[tid:%i] Retiring head instruction, "
             "instruction PC %s, [sn:%llu]\n", tid, head_inst->pcState(),
             head_inst->seqNum);
+    // [klp] {
+    DPRINTF(KLPDEBUG, "[ROB] Retiring head insts. Inst VA: 0x%x, inst SN:%llu, squashed state: %s.\n",
+            head_inst->pcState().instAddr(), head_inst->seqNum,
+            head_inst->isSquashed()?"True":"False");       
+    // } [klp]
 
     --numInstsInROB;
     --threadEntries[tid];

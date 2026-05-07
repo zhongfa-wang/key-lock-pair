@@ -92,6 +92,7 @@ class BaseCache(ClockedObject):
     tag_width       = Param.UInt64(4, "Tag width, no more than 31. The c_flwsp is hard coded as using sp_uw (32 bits). The length of the tag width shouldn't be larger than that. The MSB bit is meta data. ")
     tag_pos         = Param.UInt64(4, "Tag position. Controlling on which bit from LSB of the hashing result register starts the tag. ")
     tag_granularity = Param.UInt64(16, "The granularity of tags. One key per 16 Bytes by default. The blkSize should be divisible by this number. ")
+    threat_model    = Param.String("spectre", "Threat model. Options: 'spectre' (default), 'futuristic', 'disable'.") # Disable means sec tag verification always return true.
     # } [klp]
 
     size = Param.MemorySize("Capacity")

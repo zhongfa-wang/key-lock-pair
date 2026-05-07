@@ -1105,10 +1105,11 @@ class Packet : public Printable, public Extensible<Packet>
       assert((secTag & 0x8000'0000'0000'0000) == 0x8000'0000'0000'0000);
       unCondiStatePkt = unCondiState;
       secTagInPkt = secTag;
-      DPRINTF(KLPDEBUG,"Creating packet of speculative req: req inst VA: %x, uncondi state: %s, tag: %llx\n",
-              _req.get()->hasPC()? _req.get()->getPC() : 0x00000000,
+      DPRINTF(KLPDEBUG,"[Packet] Creating packet of speculative req: target addr: 0x%x, uncondi state: %s, tag: %llx, inst SN: %llu.\n",
+              _req->getVaddr(),
               unCondiState == gem5::triStateVal::TRUE? "Uncondi":"Speculative",
-              secTag
+              secTag,
+              _req->getReqInstSeqNum()
             );
         flags.clear();
         if (req->hasPaddr()) {
