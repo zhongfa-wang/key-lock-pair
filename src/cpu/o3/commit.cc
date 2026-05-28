@@ -42,6 +42,7 @@
 #include "cpu/o3/commit.hh"
 
 #include <algorithm>
+#include <cstdint>
 #include <set>
 #include <string>
 
@@ -72,7 +73,7 @@
 #include "sim/full_system.hh"
 // [klp] {
 #include "debug/KLPDEBUG.hh"
-// } [klp]  
+// } [klp]
 
 namespace gem5
 {
@@ -157,10 +158,17 @@ Commit::CommitStats::CommitStats(CPU *cpu, Commit *commit)
       ADD_STAT(commitSquashedInsts, statistics::units::Count::get(),
                "The number of squashed insts skipped by commit"),
       // [klp] {
-      ADD_STAT(tagVeriCorrect,statistics::units::Count::get(),
+      /* Scalar statistics */
+      ADD_STAT(tagVeriCorrectNum,statistics::units::Count::get(),
                "The number of correct tag verification"),
-      ADD_STAT(tagVeriNotCorrect,statistics::units::Count::get(),
-               "The number of wrong tag verification"),
+      ADD_STAT(tagVeriIncorrectNum,statistics::units::Count::get(),
+              "The number of wrong tag verification"),
+      ADD_STAT(falseNegNum,statistics::units::Count::get(),
+          "The num of insts that evaluated as pass but got squashed."),
+      ADD_STAT(falsePosNum,statistics::units::Count::get(),
+          "The number of insts that evaluated as fail but isn't transient."),
+      ADD_STAT(stallCycSum,statistics::units::Count::get(),
+          "The total number of stalled cycles due to tag verification."),
       // [klp] }
       ADD_STAT(commitNonSpecStalls, statistics::units::Count::get(),
                "The number of times commit has been forced to stall to "
@@ -898,7 +906,7 @@ Commit::resolveInstsByThreatModel(){
 
   DynInstPtr head_inst = rob->readHeadInst(commit_thread);
   ThreadID tid = head_inst->threadNumber;
-  wroteToTimeBuffer = rob->updateInstsToReExec(toIEW->instsToReExec, 
+  wroteToTimeBuffer = rob->updateInstsToReExec(toIEW->instsToReExec,
                                                 head_inst, tid, cpu->getParaThreatModel(),
                                                 commitWidth);
   }
@@ -969,6 +977,20 @@ Commit::commitInsts()
             DPRINTF(KLPDEBUG, "[Commit] Retiring squashed instruction. Inst VA: 0x%x, inst sn:%llu, inst squashed state:%s",
                     head_inst->pcState().instAddr(),head_inst->seqNum,
                     head_inst->isSquashed()?"True":"False");
+            /* klp stats: update tagVeriCorrectNum, falseNegNum, tagVeriIncorrectNum*/
+            if(head_inst->isKlpLoad() &&
+               !head_inst->statsUpdated[1] &&
+               head_inst->specReqTagVeriResult == gem5::triStateVal::FALSE){
+                ++stats.tagVeriCorrectNum;
+                head_inst->statsUpdated[1] = true;
+               }
+            if(head_inst->isKlpLoad() &&
+               !head_inst->statsUpdated[3] &&
+               head_inst->specReqTagVeriResult == gem5::triStateVal::TRUE){
+                ++stats.falseNegNum;
+                ++stats.tagVeriIncorrectNum;
+                head_inst->statsUpdated[3] = true;
+               }
             // } [klp]
 
             rob->retireHead(commit_thread);
@@ -1131,7 +1153,7 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
     // handling.  Signal backwards that it should be executed.
     /* [klp] This block deals with the non-speculative/strict order instructions.
     Those insts feature isExecuted== false. But the loads with tag verification failure
-    also features isExecuted == false. Hence needs to rule those loads with tag 
+    also features isExecuted == false. Hence needs to rule those loads with tag
     verification failure out from this block.*/
     if (!head_inst->isExecuted() && head_inst->getPassTagVeriDynInstCarrier() != gem5::triStateVal::FALSE) {
         // Make sure we are only trying to commit un-executed instructions we
@@ -1293,6 +1315,28 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
     if (head_inst->isHtmStart())
         iewStage->setLastRetiredHtmUid(tid, head_inst->getHtmTransactionUid());
 
+    // [klp] {
+    /* klp stats: update */
+    if(head_inst->isKlpLoad() &&
+       !head_inst->statsUpdated[1] &&
+       head_inst->specReqTagVeriResult == gem5::triStateVal::TRUE){
+        head_inst->statsUpdated[1] = true;
+        ++stats.tagVeriCorrectNum;
+       }
+    if(head_inst->isKlpLoad() &&
+       !head_inst->statsUpdated[4] &&
+       head_inst->specReqTagVeriResult == gem5::triStateVal::FALSE){
+        head_inst->statsUpdated[4] = true;
+        ++stats.falsePosNum;
+        ++stats.tagVeriIncorrectNum;
+       }
+    if(head_inst->isKlpLoad() &&
+       head_inst->specReqTagVeriResult == gem5::triStateVal::FALSE){
+        assert(head_inst->statsUpdated[5]);
+        assert(head_inst->statsUpdated[6]);
+        stats.stallCycSum += static_cast<uint64_t>(head_inst->stallCycEnd - head_inst->stallCycStart);
+       }
+    // } [klp]
     // Finally clear the head ROB entry.
     rob->retireHead(tid);
 

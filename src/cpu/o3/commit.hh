@@ -132,11 +132,11 @@ class Commit
 
   public:
     // [klp] {
-    /* Fill the insts to be re-executed unconditionally into 
+    /* Fill the insts to be re-executed unconditionally into
     the toIEW after the rob head is committed (depending on
     the threat model). */
     void resolveInstsByThreatModel();
-    /*  scrapped 
+    /*  scrapped
     void resolveInstsByThreatModel(DynInstPtr head_inst, ThreadID tid);*/
 
     // } [klp]
@@ -478,14 +478,22 @@ class Commit
          */
         statistics::Scalar commitSquashedInsts;
         // [klp] {
-        /** Stat for the total number of the tag verification that 
-         * proved to be correct.
-         */
-        statistics::Scalar tagVeriCorrect;
-         /** Stat for the total number of the tag verification that 
-          * proved to be wrong.
-          */
-        statistics::Scalar tagVeriNotCorrect;
+        /* Scalar statistics*/
+        /** Stat for the total number of the tag verification that
+         proved to be correct.*/
+        statistics::Scalar tagVeriCorrectNum;
+        /** Stat for the total number of the tag verification that
+         proved to be wrong.*/
+        statistics::Scalar tagVeriIncorrectNum;
+        /* False negatives: num of insts that evaluated as pass
+        but evatually got squashed.*/
+        statistics::Scalar falseNegNum;
+        /* False positives: num of insts that evaluated as fail
+        but evatually resolved as non-transient .*/
+        statistics::Scalar falsePosNum;
+        /* Stat for the total number of stalled cycles of insts whose
+        tag veri was evaluated as failure.*/
+        statistics::Scalar stallCycSum;
         // } [klp]
         /** Stat for the total number of times commit has had to stall due
          * to a non-speculative instruction reaching the head of the ROB.
@@ -510,6 +518,10 @@ class Commit
         /** Number of cycles where the commit bandwidth limit is reached. */
         statistics::Scalar commitEligibleSamples;
     } stats;
+    // [klp] {
+    public:
+    const CommitStats& getStats() const {return stats;}
+    // } [klp]
 };
 
 } // namespace o3

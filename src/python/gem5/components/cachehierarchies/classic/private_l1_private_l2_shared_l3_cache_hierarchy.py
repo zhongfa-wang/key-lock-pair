@@ -11,19 +11,21 @@ from m5.objects import (
     Port,
     SystemXBar,
 )
+from m5.params import *
 
 from ....isas import ISA
 from ....utils.override import *
 from ...boards.abstract_board import AbstractBoard
 from ..abstract_cache_hierarchy import AbstractCacheHierarchy
-from ..abstract_three_level_cache_hierarchy import AbstractThreeLevelCacheHierarchy
+from ..abstract_three_level_cache_hierarchy import (
+    AbstractThreeLevelCacheHierarchy,
+)
 from .abstract_classic_cache_hierarchy import AbstractClassicCacheHierarchy
-from .caches.l1dcache import L1DCache
-from .caches.l1icache import L1ICache
-from .caches.l2cache import L2Cache
-from .caches.l3cache import L3Cache
-from .caches.mmu_cache import MMUCache
-from m5.params import *
+from .caches.l1dcache import *
+from .caches.l1icache import *
+from .caches.l2cache import *
+from .caches.l3cache import *
+from .caches.mmu_cache import *
 
 
 class PrivateL1PrivateL2SharedL3CacheHierarchy(
@@ -52,12 +54,6 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
 
     def __init__(
         self,
-        # [klp] {
-        tag_width: int,
-        tag_pos: int,
-        tag_granularity: int,
-        threat_model: str,
-        # } [klp]
         l1d_size: str,
         l1i_size: str,
         l2_size: str,
@@ -72,22 +68,15 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         AbstractClassicCacheHierarchy.__init__(self=self)
         AbstractThreeLevelCacheHierarchy.__init__(
             self,
-            l1i_size  = l1i_size,
-            l1i_assoc = l1i_assoc,
-            l1d_size  = l1d_size,
-            l1d_assoc = l1d_assoc,
-            l2_size   = l2_size,
-            l2_assoc  = l2_assoc,
-            l3_size   = l3_size,
-            l3_assoc  = l3_assoc
-
+            l1i_size=l1i_size,
+            l1i_assoc=l1i_assoc,
+            l1d_size=l1d_size,
+            l1d_assoc=l1d_assoc,
+            l2_size=l2_size,
+            l2_assoc=l2_assoc,
+            l3_size=l3_size,
+            l3_assoc=l3_assoc,
         )
-        # [klp] {
-        self._tag_width       = tag_width
-        self._tag_pos         = tag_pos
-        self._tag_granularity = tag_granularity
-        self._threat_model    = threat_model
-        # } [klp]
 
         self.membus = membus if membus else self._get_default_membus()
 
@@ -109,12 +98,6 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
 
         self.l1icaches = [
             L1ICache(
-                # [klp] {
-                tag_width       = self._tag_width,
-                tag_pos         = self._tag_pos,
-                tag_granularity = self._tag_granularity,
-                threat_model    = self._threat_model,
-                # } [klp]
                 size=self._l1i_size,
                 assoc=self._l1i_assoc,
                 writeback_clean=False,
@@ -122,68 +105,27 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
             for i in range(board.get_processor().get_num_cores())
         ]
         self.l1dcaches = [
-            L1DCache(
-                # [klp] {
-                tag_width       = self._tag_width,
-                tag_pos         = self._tag_pos,
-                tag_granularity = self._tag_granularity,
-                threat_model    = self._threat_model,
-                # } [klp]
-                size=self._l1d_size, 
-                assoc=self._l1d_assoc)
+            L1DCache(size=self._l1d_size, assoc=self._l1d_assoc)
             for i in range(board.get_processor().get_num_cores())
         ]
         self.l2caches = [
-            L2Cache(
-                # [klp] {
-                tag_width       = self._tag_width,
-                tag_pos         = self._tag_pos,
-                tag_granularity = self._tag_granularity,
-                threat_model    = self._threat_model,
-                # } [klp]
-                size=self._l2_size, 
-                assoc=self._l2_assoc)
+            L2Cache(size=self._l2_size, assoc=self._l2_assoc)
             for i in range(board.get_processor().get_num_cores())
         ]
         self.l2buses = [
-            L2XBar()
-            for i in range(board.get_processor().get_num_cores())
+            L2XBar() for i in range(board.get_processor().get_num_cores())
         ]
         # self.l2cache = L2Cache(size=self._l2_size, assoc=self._l2_assoc)
         self.l3bus = L2XBar()
-        self.l3cache = L3Cache(
-                # [klp] {
-                tag_width       = self._tag_width,
-                tag_pos         = self._tag_pos,
-                tag_granularity = self._tag_granularity,
-                threat_model    = self._threat_model,
-                # } [klp]
-            size=self._l3_size,
-            assoc=self._l3_assoc)
+        self.l3cache = L3Cache(size=self._l3_size, assoc=self._l3_assoc)
         # ITLB Page walk caches
         self.iptw_caches = [
-            MMUCache(
-                # [klp] {
-                tag_width       = self._tag_width,
-                tag_pos         = self._tag_pos,
-                tag_granularity = self._tag_granularity,
-                threat_model    = self._threat_model,
-                # } [klp]
-                size="8KiB", 
-                writeback_clean=False)
+            MMUCache(size="8KiB", writeback_clean=False)
             for _ in range(board.get_processor().get_num_cores())
         ]
         # DTLB Page walk caches
         self.dptw_caches = [
-            MMUCache(
-                # [klp] {
-                tag_width       = self._tag_width,
-                tag_pos         = self._tag_pos,
-                tag_granularity = self._tag_granularity,
-                threat_model    = self._threat_model,
-                # } [klp]
-                size="8KiB", 
-                writeback_clean=False)
+            MMUCache(size="8KiB", writeback_clean=False)
             for _ in range(board.get_processor().get_num_cores())
         ]
 
@@ -214,9 +156,6 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
             else:
                 cpu.connect_interrupt()
 
-        # self.l2bus.mem_side_ports = self.l2cache.cpu_side
-        # self.membus.cpu_side_ports = self.l2cache.mem_side
-
         self.l3cache.cpu_side = self.l3bus.mem_side_ports
         self.l3cache.mem_side = self.membus.cpu_side_ports
 
@@ -234,6 +173,158 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         )
         self.iocache.mem_side = self.membus.cpu_side_ports
         self.iocache.cpu_side = board.get_mem_side_coherent_io_port()
+
+
+# [klp] {
+class KLPPL1PL2SL3CacheHierarchy(PrivateL1PrivateL2SharedL3CacheHierarchy):
+    """
+    A cache setup where each core has a private L1 Data and Instruction Cache,
+    private L2 cache, and a L3 cache is shared with all cores. The shared L3 cache is mostly
+    inclusive with respect to the split I/D L1 and MMU caches.
+    KLP configurations are passed to each cache levels
+    """
+
+    def __init__(
+        self,
+        tag_width: int,
+        tag_pos: int,
+        tag_granularity: int,
+        threat_model: str,
+        **kwargs
+    ) -> None:
+
+        PrivateL1PrivateL2SharedL3CacheHierarchy.__init__(self, **kwargs)
+        self._tag_width = tag_width
+        self._tag_pos = tag_pos
+        self._tag_granularity = tag_granularity
+        self._threat_model = threat_model
+
+    @overrides(AbstractCacheHierarchy)
+    def incorporate_cache(self, board: AbstractBoard) -> None:
+        # Set up the system port for functional access from the simulator.
+        board.connect_system_port(self.membus.cpu_side_ports)
+
+        for _, port in board.get_mem_ports():
+            self.membus.mem_side_ports = port
+
+        self.l1icaches = [
+            KLPL1ICache(
+                tag_width=self._tag_width,
+                tag_pos=self._tag_pos,
+                tag_granularity=self._tag_granularity,
+                threat_model=self._threat_model,
+                size=self._l1i_size,
+                assoc=self._l1i_assoc,
+                writeback_clean=False,
+            )
+            for i in range(board.get_processor().get_num_cores())
+        ]
+        self.l1dcaches = [
+            KLPL1DCache(
+                tag_width=self._tag_width,
+                tag_pos=self._tag_pos,
+                tag_granularity=self._tag_granularity,
+                threat_model=self._threat_model,
+                size=self._l1d_size,
+                assoc=self._l1d_assoc,
+            )
+            for i in range(board.get_processor().get_num_cores())
+        ]
+        self.l2caches = [
+            KLPL2Cache(
+                tag_width=self._tag_width,
+                tag_pos=self._tag_pos,
+                tag_granularity=self._tag_granularity,
+                threat_model=self._threat_model,
+                size=self._l2_size,
+                assoc=self._l2_assoc,
+            )
+            for i in range(board.get_processor().get_num_cores())
+        ]
+        self.l2buses = [
+            L2XBar() for i in range(board.get_processor().get_num_cores())
+        ]
+
+        self.l3bus = L2XBar()
+        self.l3cache = KLPL3Cache(
+            tag_width=self._tag_width,
+            tag_pos=self._tag_pos,
+            tag_granularity=self._tag_granularity,
+            threat_model=self._threat_model,
+            size=self._l3_size,
+            assoc=self._l3_assoc,
+        )
+        # ITLB Page walk caches
+        self.iptw_caches = [
+            KLPMMUCache(
+                tag_width=self._tag_width,
+                tag_pos=self._tag_pos,
+                tag_granularity=self._tag_granularity,
+                threat_model=self._threat_model,
+                size="8KiB",
+                writeback_clean=False,
+            )
+            for _ in range(board.get_processor().get_num_cores())
+        ]
+        # DTLB Page walk caches
+        self.dptw_caches = [
+            KLPMMUCache(
+                tag_width=self._tag_width,
+                tag_pos=self._tag_pos,
+                tag_granularity=self._tag_granularity,
+                threat_model=self._threat_model,
+                size="8KiB",
+                writeback_clean=False,
+            )
+            for _ in range(board.get_processor().get_num_cores())
+        ]
+
+        if board.has_coherent_io():
+            self._setup_io_cache(board)
+
+        for i, cpu in enumerate(board.get_processor().get_cores()):
+            cpu.connect_icache(self.l1icaches[i].cpu_side)
+            cpu.connect_dcache(self.l1dcaches[i].cpu_side)
+
+            self.l1icaches[i].mem_side = self.l2buses[i].cpu_side_ports
+            self.l1dcaches[i].mem_side = self.l2buses[i].cpu_side_ports
+
+            self.l2caches[i].cpu_side = self.l2buses[i].mem_side_ports
+            self.l2caches[i].mem_side = self.l3bus.cpu_side_ports
+
+            self.iptw_caches[i].mem_side = self.l2buses[i].cpu_side_ports
+            self.dptw_caches[i].mem_side = self.l2buses[i].cpu_side_ports
+
+            cpu.connect_walker_ports(
+                self.iptw_caches[i].cpu_side, self.dptw_caches[i].cpu_side
+            )
+
+            if board.get_processor().get_isa() == ISA.X86:
+                int_req_port = self.membus.mem_side_ports
+                int_resp_port = self.membus.cpu_side_ports
+                cpu.connect_interrupt(int_req_port, int_resp_port)
+            else:
+                cpu.connect_interrupt()
+
+        self.l3cache.cpu_side = self.l3bus.mem_side_ports
+        self.l3cache.mem_side = self.membus.cpu_side_ports
+
+
+# } [klp]
+
+
+class NoPrefetchKLPP1P2S3CacheHierarchy(KLPPL1PL2SL3CacheHierarchy):
+    def incorporate_cache(self, board):
+        super().incorporate_cache(board)
+        if hasattr(self, "l1dcaches"):
+            for cache in self.l1dcaches:
+                cache.prefetcher = NULL
+        if hasattr(self, "l2caches"):
+            for cache in self.l2caches:
+                cache.prefetcher = NULL
+        if hasattr(self, "l3cache"):
+            self.l3cache.prefetcher = NULL
+
 
 class NoPrefetchP1P2S3CacheHierarchy(PrivateL1PrivateL2SharedL3CacheHierarchy):
     def incorporate_cache(self, board):

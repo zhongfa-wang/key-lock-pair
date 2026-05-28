@@ -355,15 +355,22 @@ class DynInst : public ExecContext, public RefCounted
     /* A two-bit flag carried by a Dyninst reflecting the tag verification result
     TRUE-pass, FALSE-not pass, INIT-initial, no set. */
     triStateVal passTagVeriDynInstCarrier = gem5::triStateVal::INIT;
-    
-    /* Actually this hasn't to be a triStateVal. But making it a bool leads ambiguous 
-    problem in Packet's constructor. Hence making it as follow. Only using the TRUE 
+
+    /* Actually this hasn't to be a triStateVal. But making it a bool leads ambiguous
+    problem in Packet's constructor. Hence making it as follow. Only using the TRUE
     and FALSE state. The value is initialized to FALSE, indicating that all instructions
     are regarded as speculative until they can be regarded as non-speculative.*/
     triStateVal unCondiStateInst = gem5::triStateVal::FALSE;
 
     public:
-    /* The flag indicating that the inst should be executed unconditionally. 
+    /* Stats related: whether stats tagVeriInstNum is updated.*/
+    std::vector<bool> statsUpdated = std::vector<bool>(7,false);
+    /* Stats related:  */
+    triStateVal specReqTagVeriResult = gem5::triStateVal::INIT;
+    /* Stats related */
+    Cycles stallCycStart = Cycles(0);
+    Cycles stallCycEnd = Cycles(0);
+    /* The flag indicating that the inst should be executed unconditionally.
     Used in commit stage in case of repeatedly sending an inst to IEW.*/
     bool isReScheduled = false;
     /* The requests are managed as in-order in klp. An uncondition request is made

@@ -49,6 +49,7 @@
 #include "base/types.hh"
 #include "cpu/checker/cpu.hh"
 #include "cpu/o3/dyn_inst.hh"
+#include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/limits.hh"
 #include "cpu/o3/lsq.hh"
 #include "debug/Activity.hh"
@@ -60,6 +61,7 @@
 #include "mem/request.hh"
 // [klp] {
 #include "debug/KLPDEBUG.hh"
+#include "debug/KLPPRINT.hh"
 // } [klp]
 
 namespace gem5
@@ -100,6 +102,14 @@ LSQUnit::recvTimingResp(PacketPtr pkt)
 {
     LSQRequest *request = dynamic_cast<LSQRequest*>(pkt->senderState);
     assert(request != nullptr);
+    // [klp] {
+    DynInstPtr inst = request->instruction();
+    if(inst->getUncondiState() == gem5::triStateVal::FALSE &&
+       inst->specReqTagVeriResult == gem5::triStateVal::INIT){
+        assert(pkt->getPassSecTagVeri()!=gem5::triStateVal::INIT);
+        inst->specReqTagVeriResult = pkt->getPassSecTagVeri();
+       }
+    // } [klp]
     bool ret = true;
     /* Check that the request is still alive before any further action. */
     if (!request->isReleased()) {
@@ -184,13 +194,30 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
     cpu->ppDataAccessComplete->notify(std::make_pair(inst, pkt));
 
     // [klp] {
-    if (inst->isKlpLoad()) {
+    /* klp stats */
+    if(inst->isKlpLoad() && pkt->isUnCondiReExe()){
+      assert(pkt->passSecTagVeri());
+      assert(!inst->statsUpdated[6]);
+      inst->statsUpdated[6] = true;
+      inst->stallCycEnd = cpu->curCycle();
+    }
+
+    if (inst->isKlpLoad() && !pkt->isUnCondiReExe()) {
       inst->setPassTagVeriDynInstCarrier(pkt->getPassSecTagVeri());
       if (!pkt->passSecTagVeri()){
+        /* klp stats */
+        assert(!inst->statsUpdated[5]);
+        inst->statsUpdated[5] = true;
+        inst->stallCycStart = cpu->curCycle();
+
         DPRINTF(KLPDEBUG, "[LSQUnit] Key veri failed, sending it to commit. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, unconditional state: %s.\n",
                 inst->pcState().instAddr(),
                 inst->seqNum,
                 inst->staticInst->disassemble(inst->pcState().instAddr(),0),
+                (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False");
+        DPRINTF(KLPPRINT,"[LSQUnit] Key veri failed. Inst VA: 0x%x, target addr: 0x%x, unconditional state: %s.\n",
+                inst->pcState().instAddr(),
+                pkt->req->getVaddr(),
                 (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False");
         return;
       }
@@ -1279,6 +1306,12 @@ LSQUnit::trySendPacket(bool isLoad, PacketPtr data_pkt)
             " %ssent (cache is blocked: %d, cache_got_blocked: %d)\n",
             data_pkt->print(), request->instruction()->seqNum,
             ret ? "": "not ", lsq->cacheBlocked(), cache_got_blocked);
+    // [klp] {
+    DPRINTF(KLPPRINT, "Memory request (pkt: %s) from inst [sn:%llu] was"
+      " %ssent (cache is blocked: %d, cache_got_blocked: %d)\n",
+      data_pkt->print(), request->instruction()->seqNum,
+      ret ? "": "not ", lsq->cacheBlocked(), cache_got_blocked);
+    // } [klp]
     return ret;
 }
 

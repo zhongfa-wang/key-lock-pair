@@ -347,6 +347,23 @@ CPU::CPUStats::CPUStats(CPU *cpu)
       ADD_STAT(quiesceCycles, statistics::units::Cycle::get(),
                "Total number of cycles that CPU has spent quiesced or waiting "
                "for an interrupt")
+      /* Formula statistics*/
+      ,
+      ADD_STAT(falseNegRate,statistics::units::Rate<
+        statistics::units::Cycle, statistics::units::Count>::get(),
+        "falseNegRate = falseNegNum / tagVeriInstNum"),
+      ADD_STAT(falsePosRate,statistics::units::Rate<
+        statistics::units::Cycle, statistics::units::Count>::get(),
+        "falsePosRate = falsePosNum / tagVeriInstNum"),
+      ADD_STAT(correctRate,statistics::units::Rate<
+        statistics::units::Cycle, statistics::units::Count>::get(),
+        "correctRate = tagVeriCorrectNum / tagVeriInstNum"),
+      ADD_STAT(inCorrectRate,statistics::units::Rate<
+        statistics::units::Cycle, statistics::units::Count>::get(),
+        "inCorrectRate = tagVeriIncorrectNum / tagVeriInstNum"),
+      ADD_STAT(stallCycAvg,statistics::units::Rate<
+        statistics::units::Cycle, statistics::units::Count>::get(),
+        "stallCycAvg = stallCycSum / tagVeriInstNum")
 {
     // Register any of the O3CPU's stats here.
     timesIdled
@@ -357,6 +374,21 @@ CPU::CPUStats::CPUStats(CPU *cpu)
 
     quiesceCycles
         .prereq(quiesceCycles);
+
+    // [klp] {
+    const auto& commit_stats = cpu->commit.getStats();
+    const auto& iew_stats = cpu->iew.getStats();
+    falseNegRate.precision(6);
+    falseNegRate = commit_stats.falseNegNum / iew_stats.tagVeriInstNum;
+    falsePosRate.precision(6);
+    falsePosRate = commit_stats.falsePosNum / iew_stats.tagVeriInstNum;
+    correctRate.precision(6);
+    correctRate = commit_stats.tagVeriCorrectNum / iew_stats.tagVeriInstNum;
+    inCorrectRate.precision(6);
+    inCorrectRate = commit_stats.tagVeriIncorrectNum / iew_stats.tagVeriInstNum;
+    stallCycAvg.precision(6);
+    stallCycAvg = commit_stats.stallCycSum / iew_stats.tagVeriInstNum;
+    // } [klp]
 }
 
 void

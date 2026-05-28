@@ -477,7 +477,17 @@ class IEW
         statistics::Formula wbRate;
         /** Average number of woken instructions per writeback. */
         statistics::Formula wbFanout;
+        // [klp] {
+        /* Scalar statistics*/
+        /* Stat for the total number of the insts whose tag was verified.*/
+        statistics::Scalar tagVeriInstNum;
+        // } [klp]
     } iewStats;
+
+    // [klp] {
+    public:
+    const IEWStats& getStats() const {return iewStats;}
+    // } [klp]
 };
 
 } // namespace o3

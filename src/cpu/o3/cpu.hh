@@ -592,6 +592,16 @@ class CPU : public BaseCPU
         /** Stat for total number of cycles the CPU spends descheduled due to a
          * quiesce operation or waiting for an interrupt. */
         statistics::Scalar quiesceCycles;
+        // [klp] {
+        /* Formula statistics*/
+        statistics::Formula falseNegRate;
+        statistics::Formula falsePosRate;
+        statistics::Formula correctRate;
+        statistics::Formula inCorrectRate;
+        /* Stat for the average stalled cycles of insts whose tag veri
+        was evaluated as failure.*/
+        statistics::Formula stallCycAvg;
+        // } [klp]
     } cpuStats;
 
   public:

@@ -72,6 +72,7 @@ if env['CONF']['BUILD_ISA']:
     DebugFlag('Writeback')
     # [klp] {
     DebugFlag('KLPDEBUG')
+    DebugFlag('KLPPRINT')
     # } [klp]
 
     CompoundFlag('O3CPUAll', [ 'Fetch', 'Decode', 'Rename', 'IEW', 'Commit',

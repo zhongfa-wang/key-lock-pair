@@ -189,6 +189,12 @@ IEW::IEWStats::IEWStats(CPU *cpu)
     ADD_STAT(wbFanout, statistics::units::Rate<
                 statistics::units::Count, statistics::units::Count>::get(),
              "Average fanout of values written-back")
+    // [klp] {
+    /* Scalar statistics */
+    ,
+    ADD_STAT(tagVeriInstNum,statistics::units::Count::get(),
+    "The total number of insts whose tag was verified.")
+    // } [klp]
 {
     instsToCommit
         .init(cpu->numThreads)
@@ -1192,6 +1198,13 @@ IEW::executeInsts()
                 // Loads will mark themselves as executed, and their writeback
                 // event adds the instruction to the queue to commit
                 fault = ldstQueue.executeLoad(inst);
+                // [klp] {
+                /* klp stats: update tagVeriInstNum */
+                if(fault == NoFault && inst->isKlpLoad() && !inst->statsUpdated[0]){
+                    ++iewStats.tagVeriInstNum;
+                    inst->statsUpdated[0] = true;
+                }
+                // } [klp]
 
                 if (inst->isTranslationDelayed() &&
                     fault == NoFault) {
