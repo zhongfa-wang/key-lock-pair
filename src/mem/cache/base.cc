@@ -49,6 +49,8 @@
 
 #include "base/compiler.hh"
 #include "base/logging.hh"
+#include "base/stats/group.hh"
+#include "base/stats/units.hh"
 #include "base/trace.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
 #include "debug/Cache.hh"
@@ -91,7 +93,7 @@ BaseCache::CacheResponsePort::CacheResponsePort(const std::string &_name,
 BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
     : ClockedObject(p),
       // [klp] {
-      cache_level(p.cache_level), tag_width(p.tag_width), 
+      cache_level(p.cache_level), tag_width(p.tag_width),
       tag_pos(p.tag_pos), tag_granularity(p.tag_granularity),
       tagBitMask(p.system->initWidthMask(p.tag_width, p.tag_pos)),
       // } [klp]
@@ -172,7 +174,7 @@ BaseCache::verifySecTagInCache(const PacketPtr pkt)
   unsigned granuleNumOfReq = gem5::divCeil(pkt->getSize(), tag_granularity);
   assert(granuleNumOfReq <= (blkSize/tag_granularity));
 
-  
+
   DPRINTF(KLPDEBUG, "[BaseCache] Veri starts. Target addr: 0x%x, "
                           "request size: 0x%x, startIdx: %d, granuleNumOfReq:%d.\n",
           pkt->req->getVaddr(),
@@ -189,9 +191,9 @@ BaseCache::verifySecTagInCache(const PacketPtr pkt)
     bool areAllSecTagsMatch = true;
     /* Validate if all sec tags match. */
     for(size_t i=0 ; i<granuleNumOfReq ; ++i) {
-      areAllSecTagsMatch = areAllSecTagsMatch && 
+      areAllSecTagsMatch = areAllSecTagsMatch &&
       ((pkt->getSecTag() & tagBitMask) == ((blk->secTagPtrInCache[startIdx+i]) & tagBitMask));
-      
+
       DPRINTF(KLPDEBUG, "[BaseCache] Performing verification for %dth granule. Target addr: 0x%x,"
                             " request size: 0x%x, cache sec tag: 0x%x, pkt sec tag: 0x%x.\n",
               i,
@@ -483,10 +485,15 @@ void
 BaseCache::recvTimingReq(PacketPtr pkt)
 {
     // [klp] {
-    /* The pkt of an uncondi request is always be marked as tag verification 
+    /* The pkt of an uncondi request is always be marked as tag verification
     passed.*/
       if(cache_level == enums::CacheLevel::L1D && pkt->isUnCondiReExe())
         pkt->setPassSecTagVeri(gem5::triStateVal::TRUE);
+    /* If it's a request from speculative load, there will always be a sec tag
+    verification. */
+    if(cache_level == enums::CacheLevel::L1D && !pkt->isUnCondiReExe() && pkt->isKlpRead){
+      stats.tagVeriNum++;
+    }
     // } [klp]
     // anything that is merely forwarded pays for the forward latency and
     // the delay provided by the crossbar
@@ -1579,9 +1586,14 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                         pkt->req->getVaddr(),
                         pkt->getSize(),
                         pkt->passSecTagVeri()?"Pass":"Fail");
+                if (secTagVeriResult == gem5::triStateVal::TRUE && pkt->isKlpRead) {
+                  stats.tagVeriPassNum++;
+                }
                 /* If not, the cache sets the flag in packet as not pass and returns
                 directly. No need to satisfy the request. */
-                if (secTagVeriResult == gem5::triStateVal::FALSE) {
+                if (secTagVeriResult == gem5::triStateVal::FALSE && pkt->isKlpRead) {
+                  stats.tagVeriFailNum++;
+                  stats.failCuzofTagMismatchNum++;
                   return true;
                 }
               }
@@ -2334,10 +2346,29 @@ BaseCache::CacheCmdStats::regStatsFromParent()
 BaseCache::CacheStats::CacheStats(BaseCache &c)
     : statistics::Group(&c), cache(c),
     // [klp] {
-    ADD_STAT(tagVeriInCachePassRate, statistics::units::Count::get(),
-    "The porportion of passed verifications in all verifications."),
-    ADD_STAT(tagVeriInCacheNotPassRate, statistics::units::Count::get(),
-    "The porportion of failed verifications in all verifications."),
+    ADD_STAT(tagVeriNum, statistics::units::Count::get(),
+    "Total number of KLP tag verifications."),
+    ADD_STAT(tagVeriPassNum, statistics::units::Count::get(),
+    "Total number of passed KLP tag verification."),
+    ADD_STAT(tagVeriFailNum, statistics::units::Count::get(),
+    "Total number of failed KLP tag verification"),
+    ADD_STAT(failCuzofL1DMissNum, statistics::units::Count::get(),
+    "Total number of failed KLP tag verification caused by L1D miss."),
+    ADD_STAT(failCuzofTagMismatchNum, statistics::units::Count::get(),
+    "Total number of failed KLP tag verification caused by tag mismatch."),
+
+    ADD_STAT(failCuzofL1DMissRate,statistics::units::Rate<
+      statistics::units::Count, statistics::units::Count>::get(),
+      "failCuzofL1DMissRate = failCuzofL1DMissNum / tagVeriFailNum"),
+    ADD_STAT(failCuzofTagMismatchRate,statistics::units::Rate<
+      statistics::units::Count, statistics::units::Count>::get(),
+      "failCuzofTagMismatchRate = failCuzofTagMismatchNum / tagVeriFailNum"),
+    ADD_STAT(tagVeriPassRate,statistics::units::Rate<
+      statistics::units::Count, statistics::units::Count>::get(),
+      "tagVeriPassRate = tagVeriPassNum / tagVeriNum"),
+    ADD_STAT(tagVeriFailRate,statistics::units::Rate<
+      statistics::units::Count, statistics::units::Count>::get(),
+      "tagVeriFailRate = tagVeriFailNum/ tagVeriNum"),
     // } [klp]
     ADD_STAT(demandHits, statistics::units::Count::get(),
              "number of demand (read+write) hits"),
@@ -2446,14 +2477,21 @@ BaseCache::CacheStats::regStats()
      cmd[MemCmd::SoftPFExReq]->s)
 
     // [klp] {
-#define SUM_RD_DEMAND(s)                                        \
-    (cmd[MemCmd::ReadReq]->s +cmd[MemCmd::ReadExReq]->s +       \
-     cmd[MemCmd::ReadCleanReq]->s + cmd[MemCmd::ReadSharedReq]->s)
+    failCuzofL1DMissRate.precision(6);
+    failCuzofL1DMissRate.flags(total | nozero | nonan);
+    failCuzofL1DMissRate = failCuzofL1DMissNum / tagVeriFailNum;
 
-    tagVeriInCachePassRate.flags(total | nozero | nonan);
-    tagVeriInCachePassRate = SUM_RD_DEMAND(tagVeriInCachePassNum) / SUM_RD_DEMAND(tagVeriInCacheNum);
-    tagVeriInCacheNotPassRate.flags(total | nozero | nonan);
-    tagVeriInCacheNotPassRate = SUM_RD_DEMAND(tagVeriInCacheNotPassNum) / SUM_RD_DEMAND(tagVeriInCacheNum);
+    failCuzofTagMismatchRate.precision(6);
+    failCuzofTagMismatchRate.flags(total | nozero | nonan);
+    failCuzofTagMismatchRate = failCuzofTagMismatchNum / tagVeriFailNum;
+
+    tagVeriPassRate.precision(6);
+    tagVeriPassRate.flags(total | nozero | nonan);
+    tagVeriPassRate = tagVeriPassNum / tagVeriNum;
+
+    tagVeriFailRate.precision(6);
+    tagVeriFailRate.flags(total | nozero | nonan);
+    tagVeriFailRate = tagVeriFailNum / tagVeriNum;
     // } [klp]
 
     demandHits.flags(total | nozero | nonan);

@@ -422,6 +422,8 @@ Cache::handleTimingReqMiss(PacketPtr pkt, CacheBlk *blk, Tick forward_time,
         assert(pkt->needsResponse());
         assert(pkt->req->hasPaddr());
         assert(!pkt->req->isUncacheable());
+        stats.tagVeriFailNum++;
+        stats.failCuzofL1DMissNum++;
         PacketPtr pf = nullptr;
         /* Make a copy of the pkt for the convenience of the next swpf when MSHR misses. */
         DPRINTF(KLPDEBUG, "[Cache] L1D miss. Making swpf. Target addr: 0x%x, "

@@ -1089,8 +1089,16 @@ class BaseCache : public ClockedObject
         const BaseCache &cache;
 
         // [klp] {
-        statistics::Formula tagVeriInCachePassRate;
-        statistics::Formula tagVeriInCacheNotPassRate;
+        statistics::Scalar tagVeriNum;
+        statistics::Scalar tagVeriPassNum;
+        statistics::Scalar tagVeriFailNum;
+        statistics::Scalar failCuzofL1DMissNum;
+        statistics::Scalar failCuzofTagMismatchNum;
+
+        statistics::Formula failCuzofL1DMissRate;
+        statistics::Formula failCuzofTagMismatchRate;
+        statistics::Formula tagVeriPassRate;
+        statistics::Formula tagVeriFailRate;
         // } [klp]
 
         /** Number of hits for demand accesses. */

@@ -350,19 +350,19 @@ CPU::CPUStats::CPUStats(CPU *cpu)
       /* Formula statistics*/
       ,
       ADD_STAT(falseNegRate,statistics::units::Rate<
-        statistics::units::Cycle, statistics::units::Count>::get(),
+        statistics::units::Count, statistics::units::Count>::get(),
         "falseNegRate = falseNegNum / tagVeriInstNum"),
       ADD_STAT(falsePosRate,statistics::units::Rate<
-        statistics::units::Cycle, statistics::units::Count>::get(),
+        statistics::units::Count, statistics::units::Count>::get(),
         "falsePosRate = falsePosNum / tagVeriInstNum"),
       ADD_STAT(correctRate,statistics::units::Rate<
-        statistics::units::Cycle, statistics::units::Count>::get(),
+        statistics::units::Count, statistics::units::Count>::get(),
         "correctRate = tagVeriCorrectNum / tagVeriInstNum"),
       ADD_STAT(inCorrectRate,statistics::units::Rate<
-        statistics::units::Cycle, statistics::units::Count>::get(),
+        statistics::units::Count, statistics::units::Count>::get(),
         "inCorrectRate = tagVeriIncorrectNum / tagVeriInstNum"),
       ADD_STAT(stallCycAvg,statistics::units::Rate<
-        statistics::units::Cycle, statistics::units::Count>::get(),
+        statistics::units::Count, statistics::units::Count>::get(),
         "stallCycAvg = stallCycSum / tagVeriInstNum")
 {
     // Register any of the O3CPU's stats here.
