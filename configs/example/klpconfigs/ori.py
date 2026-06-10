@@ -56,7 +56,7 @@ requires(isa_required=ISA.RISCV)
 # For classic, PrivateL1PrivateL2 and NoCache have been tested.
 # For Ruby, MESI_Two_Level and MI_example have been tested.
 
-cache_hierarchy = NoPrefetchP1P2S3CacheHierarchy(
+cache_hierarchy = PrivateL1PrivateL2SharedL3CacheHierarchy(
     l1i_size="32KiB",
     l1i_assoc=8,
     l1d_size="32KiB",
@@ -85,6 +85,24 @@ board = RiscvBoard(
     memory=memory,
     cache_hierarchy=cache_hierarchy,
 )
+# Enable fuPool
+all_cores = getattr(processor, "_start_cores", []) + getattr(
+    processor, "_switch_cores", []
+)
+if not all_cores:
+    all_cores = getattr(processor, "starting_cores", []) + getattr(
+        processor, "switch_cores", []
+    )
+for core in all_cores:# 1. 强行访问 core.core 触发 Python 拓扑解析，把 fuPool 提到 core 顶层
+    actual_cpu = core.core
+    
+    # 2. 手动对齐被隐藏的流水线清空宽度
+    actual_cpu.squashWidth = 8
+    
+    # 3. 手动对齐分支预测器的 BTB Tag 宽度
+    if hasattr(actual_cpu, "branchPred") and actual_cpu.branchPred:
+        if hasattr(actual_cpu.branchPred, "btb") and actual_cpu.branchPred.btb:
+            actual_cpu.branchPred.btb.btbIndexingPolicy.tag_bits = 64
 
 # Set the Syscall Emulation (SE) workload.
 board.set_se_binary_workload(

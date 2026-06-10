@@ -2359,10 +2359,10 @@ BaseCache::CacheStats::CacheStats(BaseCache &c)
 
     ADD_STAT(failCuzofL1DMissRate,statistics::units::Rate<
       statistics::units::Count, statistics::units::Count>::get(),
-      "failCuzofL1DMissRate = failCuzofL1DMissNum / tagVeriFailNum"),
+      "failCuzofL1DMissRate = failCuzofL1DMissNum / tagVeriNum"),
     ADD_STAT(failCuzofTagMismatchRate,statistics::units::Rate<
       statistics::units::Count, statistics::units::Count>::get(),
-      "failCuzofTagMismatchRate = failCuzofTagMismatchNum / tagVeriFailNum"),
+      "failCuzofTagMismatchRate = failCuzofTagMismatchNum / tagVeriNum"),
     ADD_STAT(tagVeriPassRate,statistics::units::Rate<
       statistics::units::Count, statistics::units::Count>::get(),
       "tagVeriPassRate = tagVeriPassNum / tagVeriNum"),
@@ -2478,19 +2478,19 @@ BaseCache::CacheStats::regStats()
 
     // [klp] {
     failCuzofL1DMissRate.precision(6);
-    failCuzofL1DMissRate.flags(total | nozero | nonan);
-    failCuzofL1DMissRate = failCuzofL1DMissNum / tagVeriFailNum;
+    failCuzofL1DMissRate.flags(total | nonan);
+    failCuzofL1DMissRate = failCuzofL1DMissNum / tagVeriNum;
 
     failCuzofTagMismatchRate.precision(6);
-    failCuzofTagMismatchRate.flags(total | nozero | nonan);
-    failCuzofTagMismatchRate = failCuzofTagMismatchNum / tagVeriFailNum;
+    failCuzofTagMismatchRate.flags(total | nonan);
+    failCuzofTagMismatchRate = failCuzofTagMismatchNum / tagVeriNum;
 
     tagVeriPassRate.precision(6);
-    tagVeriPassRate.flags(total | nozero | nonan);
+    tagVeriPassRate.flags(total | nonan);
     tagVeriPassRate = tagVeriPassNum / tagVeriNum;
 
     tagVeriFailRate.precision(6);
-    tagVeriFailRate.flags(total | nozero | nonan);
+    tagVeriFailRate.flags(total | nonan);
     tagVeriFailRate = tagVeriFailNum / tagVeriNum;
     // } [klp]
 
