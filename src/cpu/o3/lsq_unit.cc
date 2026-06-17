@@ -105,8 +105,22 @@ LSQUnit::recvTimingResp(PacketPtr pkt)
     // [klp] {
     DynInstPtr inst = request->instruction();
     if(inst->getUncondiState() == gem5::triStateVal::FALSE &&
+       inst->isKlpLoad() &&
        inst->specReqTagVeriResult == gem5::triStateVal::INIT){
-        assert(pkt->getPassSecTagVeri()!=gem5::triStateVal::INIT);
+        // assert(pkt->getPassSecTagVeri()!=gem5::triStateVal::INIT);
+        if (pkt->getPassSecTagVeri() == gem5::triStateVal::INIT) {
+        panic("Packet Response with INIT Tag!\n"
+              "  - PC: %s\n"
+              "  - Is Load? %d\n"
+              "  - Command: %s\n"
+              "  - Addr: %#lx\n"
+              "  - Is Uncacheable? %d\n",
+              inst->pcState(),
+              inst->isLoad(),
+              pkt->cmdString(),
+              pkt->getAddr(),
+              pkt->req->isUncacheable());
+    }
         inst->specReqTagVeriResult = pkt->getPassSecTagVeri();
        }
     // } [klp]

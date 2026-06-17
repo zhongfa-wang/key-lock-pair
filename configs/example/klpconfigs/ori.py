@@ -68,7 +68,7 @@ cache_hierarchy = PrivateL1PrivateL2SharedL3CacheHierarchy(
 )
 
 # Setup the system memory.
-memory = SingleChannelDDR3_1600()
+memory = SingleChannelDDR3_1600(size="16GiB")
 
 # Setup a single core Processor.
 processor = SimpleSwitchableProcessor(

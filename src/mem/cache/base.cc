@@ -491,8 +491,24 @@ BaseCache::recvTimingReq(PacketPtr pkt)
         pkt->setPassSecTagVeri(gem5::triStateVal::TRUE);
     /* If it's a request from speculative load, there will always be a sec tag
     verification. */
-    if(cache_level == enums::CacheLevel::L1D && !pkt->isUnCondiReExe() && pkt->isKlpRead){
+    // if(cache_level == enums::CacheLevel::L1D && !pkt->isUnCondiReExe() && pkt->isKlpRead){
+    if(cache_level == enums::CacheLevel::L1D){
       stats.tagVeriNum++;
+      if (pkt->isWrite()) {
+        stats.WriteNum++;
+      } else if (pkt->isRead()) {
+        if(!pkt->isUnCondiReExe()){
+          stats.specReadNum++;
+        } else {
+          stats.uncondiReadNum++;
+        }
+      } else {
+        if(!pkt->isUnCondiReExe()){
+          stats.specElse++;
+        } else {
+          stats.uncondiElse++;
+        }
+      }
     }
     // } [klp]
     // anything that is merely forwarded pays for the forward latency and
@@ -1606,7 +1622,8 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         satisfyRequest(pkt, blk);
         // [klp] {
         /* Unconditional loads will fill sec tags. */
-        if(cache_level == enums::CacheLevel::L1D && pkt->isUnCondiReExe()){
+        if(cache_level == enums::CacheLevel::L1D && pkt->isUnCondiReExe()
+           && pkt->isKlpRead){
           tags->setSecTagInCache(pkt, tag_granularity, pkt->getSecTag());
         }
         // } [klp]
@@ -2346,6 +2363,13 @@ BaseCache::CacheCmdStats::regStatsFromParent()
 BaseCache::CacheStats::CacheStats(BaseCache &c)
     : statistics::Group(&c), cache(c),
     // [klp] {
+    /* KLPFIXME */
+    ADD_STAT(specReadNum, statistics::units::Count::get()),
+    ADD_STAT(WriteNum, statistics::units::Count::get()),
+    ADD_STAT(specElse, statistics::units::Count::get()),
+    ADD_STAT(uncondiReadNum, statistics::units::Count::get()),
+    ADD_STAT(uncondiElse, statistics::units::Count::get()),
+    /* KLPFIXME */
     ADD_STAT(tagVeriNum, statistics::units::Count::get(),
     "Total number of KLP tag verifications."),
     ADD_STAT(tagVeriPassNum, statistics::units::Count::get(),

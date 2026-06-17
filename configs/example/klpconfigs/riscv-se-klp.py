@@ -103,7 +103,7 @@ cache_hierarchy = KLPPL1PL2SL3CacheHierarchy(
 )
 
 # Setup the system memory.
-memory = SingleChannelDDR3_1600()
+memory = SingleChannelDDR3_1600(size="16GiB")
 
 processor = SimpleSwitchableProcessor(
     starting_core_type=CPUTypes.ATOMIC,

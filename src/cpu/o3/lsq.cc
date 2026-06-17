@@ -789,7 +789,8 @@ LSQ::pushRequest(const DynInstPtr& inst, bool isLoad, uint8_t *data,
 
     if (inst->translationStarted()) {
         // [klp] {
-        if(inst->isReScheduled && !inst->isUncondiLsqreqBuilt){
+        if(inst->isReScheduled && !inst->isUncondiLsqreqBuilt
+          && inst->isKlpLoad()){
           /* Clear the spec lsqreq */
           inst->savedRequest->_port.loadQueue[inst->lqIdx].setRequest(nullptr);
           inst->savedRequest->discard();
