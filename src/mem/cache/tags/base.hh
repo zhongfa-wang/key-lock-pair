@@ -77,8 +77,8 @@ class BaseTags : public ClockedObject
   public:
   // [klp] { 
   virtual bool areAllSecTagsValidInCache(const CacheBlk *blk, int granuleNum){return false;}
-  virtual bool areSecTagsValidInCache(const CacheBlk *blk, int granuleNum, int startIdx);
-  virtual void setSecTagInCache(const PacketPtr pkt, uint64_t tag_granularity, uint64_t val);
+  virtual bool areSecTagsValidInCache(const CacheBlk *blk, int granuleNum, int startIdx, const PacketPtr pkt);
+  void setSecTagInCache(const PacketPtr pkt, uint64_t tag_granularity, uint64_t val);
 
   /* The maximum width of tag is 32. I.e., tag_width <= 32 
   (Because c_lwsp/c_swsp has a 32 bits src reg dependence on sp).*/

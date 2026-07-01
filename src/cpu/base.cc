@@ -131,7 +131,8 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
       // [klp] {
       tag_width(p.tag_width), tag_pos(p.tag_pos), tag_granularity(p.tag_granularity),
       threat_model(p.threat_model), tag_gen_src(p.tag_gen_src),
-      tagBitMask(p.system->initWidthMask(p.tag_width, p.tag_pos)), 
+      tagBitMask(p.system->initWidthMask(p.tag_width, p.tag_pos)),
+      // tagBitMask(p.system->initWidthMask(p.tag_width)), // Mask used in GF2
       // } [klp]
       _instRequestorId(p.system->getRequestorId(this, "inst")),
       _dataRequestorId(p.system->getRequestorId(this, "data")),
@@ -230,6 +231,15 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
             commitStatptr->numOps;
         commitStats.emplace_back(commitStatptr);
     }
+    // [klp] {
+    // The hashing function is hashingCutBits by default.
+    hashingFuncPtr = &BaseCPU::hashingCutBits;
+    
+    if (p.tag_gen_src == "framePcGF2") {
+      hashingFuncPtr = &BaseCPU::hashingGF2_16to4;
+    }
+      
+    // } [klp]
 }
 
 void
@@ -241,6 +251,44 @@ BaseCPU::enableFunctionTrace()
 BaseCPU::~BaseCPU()
 {
 }
+
+// [klp] {
+/* Hashing. Currently using xor by bit as the hashing function. */
+uint64_t 
+BaseCPU::hashingCutBits(uint64_t val1, uint64_t val2, uint64_t tag_pos) {
+  uint64_t res = (val1 ^ val2) >> tag_pos;
+  return res;
+}
+
+uint64_t
+BaseCPU::hashingGF2_64to4(uint64_t val1, uint64_t val2, uint64_t startpos) {
+  uint64_t val = (val1 ^ val2);
+  uint64_t result = 0;
+  uint16_t output_width = 4;
+  for (size_t i=0; i<output_width; ++i){
+    uint64_t and_res = GF2_MATRIX[i%output_width] & val;
+    if (__builtin_parityll(and_res)){
+      result |= (1 << i);
+    }
+  }
+  return result;
+}
+
+uint64_t
+BaseCPU::hashingGF2_16to4(uint64_t val1, uint64_t val2, uint64_t startpos) {
+  uint64_t val = (val1 ^ val2);
+  uint16_t extractedVal = (val >> startpos) & 0xFFFF;
+  uint64_t result = 0;
+  uint16_t output_width = 4;
+  for (size_t i=0; i < output_width; ++i){
+    uint16_t and_res = GF2_MATRIX_16[i] & extractedVal;
+    if (__builtin_parity(and_res)) {
+      result |= (1ULL << i);
+    }
+  }
+  return result;
+}
+// } [klp]
 
 void
 BaseCPU::postInterrupt(ThreadID tid, int int_num, int index)

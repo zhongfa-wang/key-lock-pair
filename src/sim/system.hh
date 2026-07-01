@@ -436,9 +436,11 @@ class System : public SimObject, public PCEventScope
   public:
     // [klp] {
     // Initializing the tagBitMask
-    inline uint64_t initWidthMask(uint64_t width, uint64_t pos){
-      return (~(0xFFFF'FFFF'FFFF'FFFF<<width)) << pos; // Set the 3rd - 3rd+width bits of the mask as 1 and others as 0.
+    inline uint64_t initWidthMask(uint64_t width){
+      return (~(0xFFFF'FFFF'FFFF'FFFF<<width)); // Set the pos-th - pos-th + width bits of the mask as 1 and others as 0.
     }
+    inline uint64_t initWidthMask(uint64_t width, uint64_t pos){
+      return (~(0xFFFF'FFFF'FFFF'FFFF<<width)) << pos;}
     // } [klp]
     /**
      * Request an id used to create a request object in the system. All objects

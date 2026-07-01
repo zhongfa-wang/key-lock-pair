@@ -71,8 +71,8 @@ parser.add_argument(
 parser.add_argument(
     "--tag_gen_src",
     type=str,
-    default="framePc",
-    help="The source information to generate the key. Options: 'framePc' by default, 'baseAddr'. ",
+    default="framePcTagCut",
+    help="Source info to generate key. Options: 'framePcTagCut' (default), 'framePcGF2', 'baseAddr'",
 )
 # } [klp]
 parser.add_argument(
@@ -121,19 +121,21 @@ board = RiscvBoard(
 )
 
 # [klp] {
-all_cores = getattr(processor, "_start_cores", []) + getattr(
-    processor, "_switch_cores", []
-)
-if not all_cores:
-    all_cores = getattr(processor, "starting_cores", []) + getattr(
-        processor, "switch_cores", []
-    )
-for core in all_cores:
-    core.core.tag_width = args.tag_width
-    core.core.tag_pos = args.tag_pos
-    core.core.threat_model = args.threat_model
-    core.core.tag_gen_src = args.tag_gen_src
-    core.core.tag_granularity = args.tag_granularity
+# descendants() will traverse all components under processor
+found_cores = 0
+for obj in processor.descendants():
+    # Search the python wrapper
+    if hasattr(obj, "core") and hasattr(obj.core, "tag_pos"):
+        found_cores += 1
+        obj.core.tag_width = args.tag_width
+        obj.core.tag_pos = args.tag_pos
+        obj.core.threat_model = args.threat_model
+        obj.core.tag_gen_src = args.tag_gen_src
+        obj.core.tag_granularity = args.tag_granularity
+
+if found_cores == 0:
+    print("ERROR: Failed to find any cores to inject parameters!")
+    sys.exit(1)
 # } [klp]
 
 # Set the Syscall Emulation (SE) workload.
@@ -157,7 +159,7 @@ if args.fwrdinsts > 0:
 
 if args.o3insts > 0:
     print(f"Phase 2: Executing {args.o3insts} instructions using O3 CPU...")
-    # 由于已经切换到 O3 核心，这个指令上限会针对新激活的 O3 核心重新计数
+    # Reset the switch core's counter
     simulator.schedule_max_insts(args.o3insts)
     simulator.run()
 

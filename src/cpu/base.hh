@@ -106,8 +106,30 @@ class CPUProgressEvent : public Event
 class BaseCPU : public ClockedObject
 {
   // [klp] {
+  private:
+  const uint64_t GF2_MATRIX[4] = {
+    0x7A5C3658A3E1B92C, // Row 0
+    0x5C9A65B2C1783E4A, // Row 1
+    0x38D1E6A59B2C47F0, // Row 2
+    0x9E2B47C15A8F0D36  // Row 3
+  };
+  const uint16_t GF2_MATRIX_16[4] = {
+    0xA72A, // Row 0
+    0xCACB, // Row 1
+    0x3AB2, // Row 2
+    0x56AD  // Row 3
+  };
+
   public:
+  using hashingFuncPtrType = uint64_t (BaseCPU::*)(uint64_t,uint64_t,uint64_t);
+  hashingFuncPtrType hashingFuncPtr;
+  uint64_t hashingCutBits(uint64_t val1, uint64_t val2, uint64_t tag_pos );
+  uint64_t hashingGF2_64to4(uint64_t val1, uint64_t val2, uint64_t startpos);
+  uint64_t hashingGF2_16to4(uint64_t val1, uint64_t val2, uint64_t startpos);
+
   int getParaTagWidth(){return tag_width;}
+  int getParaTagPos(){return tag_pos;}
+  int getParaTagGranularity(){return tag_granularity;}
   std::string getParaThreatModel(){return threat_model;}
   std::string getParaTagGenSrc(){return tag_gen_src;}
   uint64_t getWidthMask(){return tagBitMask;}

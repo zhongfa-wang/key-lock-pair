@@ -1089,13 +1089,12 @@ class BaseCache : public ClockedObject
         const BaseCache &cache;
 
         // [klp] {
-        /* KLPFIXME */
         statistics::Scalar specReadNum;
         statistics::Scalar WriteNum;
         statistics::Scalar specElse;
         statistics::Scalar uncondiReadNum;
         statistics::Scalar uncondiElse;
-        /* KLPFIXME */
+        
         statistics::Scalar tagVeriNum;
         statistics::Scalar tagVeriPassNum;
         statistics::Scalar tagVeriFailNum;

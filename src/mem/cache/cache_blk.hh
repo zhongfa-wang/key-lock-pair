@@ -60,6 +60,9 @@
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/cur_tick.hh"
+// [klp] {
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -176,9 +179,15 @@ class CacheBlk : public TaggedEntry
       secTagValidBitsInCache.assign(secTagValidBitsInCache.size(),false);
     }
     /* Set the sec tag valid bit as valid. */
-    void setSecTagValid(int nth)
+    void setSecTagValid(int nth, const PacketPtr pkt)
     {
       assert(nth < secTagValidBitsInCache.size());
+      DPRINTF(KLPDEBUG, "[CacheBlk] Setting %dth granule valid. Target addr: 0x%x, "
+        "Value before setting: %s.\n",
+        nth,
+        pkt->req->getVaddr(),
+        secTagValidBitsInCache[nth]?"True":"False"
+        );
       secTagValidBitsInCache[nth] = true;
     }
     // /* Candidate constructor that initializes sec tag valid bits. */

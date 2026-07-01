@@ -61,7 +61,6 @@
 #include "mem/request.hh"
 // [klp] {
 #include "debug/KLPDEBUG.hh"
-#include "debug/KLPPRINT.hh"
 // } [klp]
 
 namespace gem5
@@ -228,10 +227,6 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
                 inst->pcState().instAddr(),
                 inst->seqNum,
                 inst->staticInst->disassemble(inst->pcState().instAddr(),0),
-                (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False");
-        DPRINTF(KLPPRINT,"[LSQUnit] Key veri failed. Inst VA: 0x%x, target addr: 0x%x, unconditional state: %s.\n",
-                inst->pcState().instAddr(),
-                pkt->req->getVaddr(),
                 (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False");
         return;
       }
@@ -1320,12 +1315,6 @@ LSQUnit::trySendPacket(bool isLoad, PacketPtr data_pkt)
             " %ssent (cache is blocked: %d, cache_got_blocked: %d)\n",
             data_pkt->print(), request->instruction()->seqNum,
             ret ? "": "not ", lsq->cacheBlocked(), cache_got_blocked);
-    // [klp] {
-    DPRINTF(KLPPRINT, "Memory request (pkt: %s) from inst [sn:%llu] was"
-      " %ssent (cache is blocked: %d, cache_got_blocked: %d)\n",
-      data_pkt->print(), request->instruction()->seqNum,
-      ret ? "": "not ", lsq->cacheBlocked(), cache_got_blocked);
-    // } [klp]
     return ret;
 }
 

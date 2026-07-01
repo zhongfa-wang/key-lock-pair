@@ -50,14 +50,19 @@
 #include <memory>
 #include <sys/types.h>
 
+#include "base/trace.hh"
 #include "base/types.hh"
 #include "mem/cache/replacement_policies/replaceable_entry.hh"
 #include "mem/cache/tags/indexing_policies/base.hh"
 #include "mem/cache/tags/partitioning_policies/partition_manager.hh"
+#include "mem/packet.hh"
 #include "mem/request.hh"
 #include "sim/core.hh"
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"
+// [klp] {
+#include "debug/KLPDEBUG.hh"
+// } [klp]
 
 namespace gem5
 {
@@ -85,21 +90,23 @@ BaseTags::BaseTags(const Params &p)
 
 // [klp] {
 bool 
-BaseTags::areSecTagsValidInCache(const CacheBlk *blk, int granuleNum, int startIdx)
+BaseTags::areSecTagsValidInCache(const CacheBlk *blk, int granuleNum, int startIdx, const PacketPtr pkt)
 {
   bool areAllSecTagsValid = true;
   for(size_t i=0; i<granuleNum; ++i)
   {
     areAllSecTagsValid = areAllSecTagsValid && blk->secTagValidBitsInCache[startIdx+i];
-    DPRINTF(KLPDEBUG, "[BaseTag] Checking secure tag's validity: index: 0x%x, granule number: 0x%x,"
+    DPRINTF(KLPDEBUG, "[BaseTag] Checking secure tag's validity: target addr: 0x%x, index: 0x%x, granule number: 0x%x,"
             "validity: %s.\n",
+            pkt->req->getVaddr(),
             i,
             granuleNum,
-            blk->secTagValidBitsInCache[i]?"true":"false");
+            blk->secTagValidBitsInCache[startIdx+i]?"true":"false");
   }
-  DPRINTF(KLPDEBUG, "[BaseTag] The result of the validity check of blk 0x%x is %s.\n",
+  DPRINTF(KLPDEBUG, "[BaseTag] The result of the validity check of blk 0x%x is %s, target addr: 0x%x.\n",
           blk,
-          areAllSecTagsValid?"true":"false");
+          areAllSecTagsValid?"true":"false",
+          pkt->req->getVaddr());
   return areAllSecTagsValid;
 }
 
@@ -112,13 +119,19 @@ BaseTags::setSecTagInCache(const PacketPtr pkt, uint64_t tag_granularity, uint64
   int startIdx = extractBlkOffset(pkt->getAddr()) / tag_granularity;
   unsigned granuleNumOfReq = gem5::divCeil(pkt->getSize(), tag_granularity);
   assert(granuleNumOfReq <= (blkSize/tag_granularity));
-  assert(startIdx < granuleNumOfReq);
+  assert(startIdx < (blkSize/tag_granularity));
   
-  for(size_t i=0 ; i<granuleNumOfReq ; ++i) {
-    blk->secTagPtrInCache[startIdx+i] = val;
-    blk->setSecTagValid(startIdx+i);
+  for(size_t i=startIdx ; i<(startIdx+granuleNumOfReq) ; ++i) {
+    blk->secTagPtrInCache[i] = val;
+    blk->setSecTagValid(i,pkt);
   }
-
+  DPRINTF(KLPDEBUG, "[BaseTag] Storing sec tag in cache. Target addr: 0x%x, "
+    " sec tag: 0x%x, request size: 0x%x, startIdx: %d, granuleNumOfReq:%d.\n",
+    pkt->req->getVaddr(),
+    val,
+    pkt->getSize(),
+    startIdx,
+    granuleNumOfReq);
 }
 // } [klp]
 

@@ -96,6 +96,7 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
       cache_level(p.cache_level), tag_width(p.tag_width),
       tag_pos(p.tag_pos), tag_granularity(p.tag_granularity),
       tagBitMask(p.system->initWidthMask(p.tag_width, p.tag_pos)),
+      // tagBitMask(p.system->initWidthMask(p.tag_width)), // Mask used in GF2
       // } [klp]
       cpuSidePort (p.name + ".cpu_side_port", *this, "CpuSidePort"),
       memSidePort(p.name + ".mem_side_port", this, "MemSidePort"),
@@ -181,7 +182,7 @@ BaseCache::verifySecTagInCache(const PacketPtr pkt)
           pkt->getSize(),
           startIdx,
           granuleNumOfReq);
-  if(!tags->areSecTagsValidInCache(blk, granuleNumOfReq, startIdx)) {
+  if(!tags->areSecTagsValidInCache(blk, granuleNumOfReq, startIdx, pkt)) {
     DPRINTF(KLPDEBUG, "[BaseCache] Sec tag invalid. Target addr: 0x%x, "
                             " request size: 0x%x.\n",
             pkt->req->getVaddr(),
@@ -195,11 +196,18 @@ BaseCache::verifySecTagInCache(const PacketPtr pkt)
       ((pkt->getSecTag() & tagBitMask) == ((blk->secTagPtrInCache[startIdx+i]) & tagBitMask));
 
       DPRINTF(KLPDEBUG, "[BaseCache] Performing verification for %dth granule. Target addr: 0x%x,"
-                            " request size: 0x%x, cache sec tag: 0x%x, pkt sec tag: 0x%x.\n",
+                            " request size: 0x%x, "
+                            " parameter-tag_pos: %d"
+                            " cache sec tag: 0x%x, cache sec tag with mask: 0x%x,"
+                            " pkt sec tag: 0x%x, tag bit mask: 0x%x, pkt sec tag with mask: 0x%x\n",
               i,
               pkt->req->getVaddr(),
               pkt->getSize(),
+              tag_pos,
+              (blk->secTagPtrInCache[startIdx]),
               ((blk->secTagPtrInCache[startIdx]) & tagBitMask),
+              pkt->getSecTag(),
+              tagBitMask,
               (pkt->getSecTag() & tagBitMask));
     }
     DPRINTF(KLPDEBUG, "[BaseCache] Veri finished. Target addr: 0x%x, request size: 0x%x, "
@@ -2363,13 +2371,12 @@ BaseCache::CacheCmdStats::regStatsFromParent()
 BaseCache::CacheStats::CacheStats(BaseCache &c)
     : statistics::Group(&c), cache(c),
     // [klp] {
-    /* KLPFIXME */
     ADD_STAT(specReadNum, statistics::units::Count::get()),
     ADD_STAT(WriteNum, statistics::units::Count::get()),
     ADD_STAT(specElse, statistics::units::Count::get()),
     ADD_STAT(uncondiReadNum, statistics::units::Count::get()),
     ADD_STAT(uncondiElse, statistics::units::Count::get()),
-    /* KLPFIXME */
+    
     ADD_STAT(tagVeriNum, statistics::units::Count::get(),
     "Total number of KLP tag verifications."),
     ADD_STAT(tagVeriPassNum, statistics::units::Count::get(),

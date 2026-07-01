@@ -106,7 +106,7 @@ class BaseCPU(ClockedObject):
     tag_pos         = Param.UInt64(4, "Tag position. Controlling on which bit from LSB of the hashing result register starts the tag. ")
     tag_granularity = Param.UInt64(16, "The granularity of tags. One key per 16 Bytes by default. The blkSize should be divisible by this number.")
     threat_model    = Param.String("spectre", "Threat model. Options: 'spectre' (default), 'futuristic', 'disable'.") # Disable means sec tag verification always return true.
-    tag_gen_src     = Param.String("framePc", "Source info to generate key. Options: 'framePc' (default),'baseAddr'.")
+    tag_gen_src     = Param.String("framePcTagCut", "Source info to generate key. Options: 'framePcTagCut' (default), 'framePcGF2', 'baseAddr'.")
     # } [klp]
     numThreads = Param.Unsigned(1, "number of HW thread contexts")
     pwr_gating_latency = Param.Cycles(

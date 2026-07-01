@@ -91,23 +91,6 @@ class BaseSetAssoc : public BaseTags
       }
       return areAllSecTagsValid;
     }
-
-    /* Store the sec tag value in cache and set it as valid.*/
-    void setSecTagInCache(const PacketPtr pkt, uint64_t tag_granularity, uint64_t val) override {
-      /* Setting sec tags always happens when an unconditional req
-      hit the L1D cache hence no need to check if the blk is valid.*/
-      CacheBlk *blk = findBlock({pkt->getAddr(), pkt->isSecure()});
-      int startIdx = extractBlkOffset(pkt->getAddr()) / tag_granularity;
-      unsigned granuleNumOfReq = gem5::divCeil(pkt->getSize(), tag_granularity);
-      assert(granuleNumOfReq <= (blkSize/tag_granularity));
-      assert(startIdx < (blkSize/tag_granularity));
-      
-      for(size_t i=startIdx ; i<(startIdx+granuleNumOfReq) ; ++i) {
-        blk->secTagPtrInCache[i] = val;
-        blk->setSecTagValid(i);
-      }
-
-    }
   // } [klp]
   protected:
     /** The allocatable associativity of the cache (alloc mask). */
