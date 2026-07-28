@@ -297,9 +297,14 @@ class StaticInst : public RefCounted, public StaticInstFlags
             
     // [klp] {
     // Generate security tag return a uint32_t value
-    uint64_t genSecTagFramePC(ExecContext *xc, uint64_t spRegVal) const;
+    uint64_t genSecTag(ExecContext *xc) const;
     bool isKlpLoad() const {return flags[IsKlpLoad];}
     bool isKlpStore() const {return flags[IsKlpStore];}
+    virtual bool isOffsetZero() const {
+      panic("getOffset() not implemented for this instruction!");
+      return false;
+    }
+
     // } [klp]
 
     virtual Fault

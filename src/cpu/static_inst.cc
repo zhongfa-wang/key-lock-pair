@@ -34,42 +34,97 @@
 #include <sys/types.h>
 
 #include "base/trace.hh"
+#include "base/types.hh"
 #include "cpu/thread_context.hh"
 // [klp] {
 #include "cpu/exec_context.hh"
 #include "debug/KLPDEBUG.hh"
 #include "debug/KLPPRINT.hh"
 #include "cpu/base.hh"
+#include "cpu/o3/dyn_inst.hh"
+#include "cpu/reg_class.hh"
 // } [klp]
 
 namespace gem5
 {
 
 // [klp] {
-/* Generate security tag return a uint32_t value */
 uint64_t 
-StaticInst::genSecTagFramePC(ExecContext *xc, uint64_t spRegVal) const{
-  // uint64_t tagVal = 0x0;
-  uint64_t tagVal;
+StaticInst::genSecTag(ExecContext *xc) const{
+  uint64_t tagVal=0x0, tmpTagVal=0x0, rsVal=0x0;
   BaseCPU *cpu = xc->tcBase()->getCpuPtr();
-  Addr pc = xc->pcState().instAddr();
-  std::string tagGenSrc = cpu->getParaTagGenSrc();
-  uint64_t tmp = std::invoke(cpu->hashingFuncPtr,cpu, spRegVal,pc,cpu->getParaTagPos()) & cpu->getWidthMask();
-  /* GF2 hashing */
-  // uint64_t tmp = hashingGF2_16to4(hashing(spRegVal,pc),2);
-  /* MSB = 1 means it's a legal sec tag value. */
-  tagVal = tmp | 0x8000'0000'0000'0000;
-  DPRINTF(KLPPRINT, "[StaticInst] Generating the secure tag of the inst. Inst VA: 0x%x, inst assembly: %s, "
-                    "sp reg val: 0x%x, mask: 0x%x, hashing res: 0x%x, secure tag with mask: 0x%x, parameter-tag pos: %d, "
-                    "parameter-tag granularity: %d.\n",
-                    pc,
-                    disassemble(pc,0),
-                    spRegVal,
-                    cpu->getWidthMask(),
-                    std::invoke(cpu->hashingFuncPtr,cpu, spRegVal,pc,cpu->getParaTagPos()),
-                    tagVal,
-                    cpu->getParaTagPos(),
-                    cpu->getParaTagGranularity());
+  const RegId& rs1_regId = this->srcRegIdx(0);
+  gem5::o3::DynInst *inst = dynamic_cast<gem5::o3::DynInst*>(xc);
+  bool baseRegUnknown = false;
+  
+  if (rs1_regId.is(gem5::IntRegClass)) {
+    RegIndex rs1Idx = rs1_regId.index();
+    if(rs1Idx==2 || rs1Idx==3 || rs1Idx==4){
+      rsVal = xc->getRegOperand(this, 0);
+      tmpTagVal = std::invoke(cpu->hashingFuncPtr,cpu,rsVal,rsVal,cpu->getParaTagPos()) & cpu->getWidthMask();
+      inst->setIsBaseUnknown(gem5::triStateVal::FALSE);
+    } else {
+      if (!isOffsetZero()){
+        rsVal = xc->getRegOperand(this, 0);
+        tmpTagVal = std::invoke(cpu->hashingFuncPtr,cpu,rsVal,rsVal,cpu->getParaTagPos()) & cpu->getWidthMask();
+        inst->setIsBaseUnknown(gem5::triStateVal::FALSE);
+      } else {
+        inst->setIsBaseUnknown(gem5::triStateVal::TRUE);
+        baseRegUnknown = true;
+      }
+    }
+
+    /* if(inst->numSrcRegs() == 1){
+      if (inst->renamedSrcIdx(0)->testIsBase()) {
+        rsVal = inst->getRegOperand(this,0);
+        tmpTagVal = std::invoke(cpu->hashingFuncPtr,cpu,rsVal,rsVal,cpu->getParaTagPos()) & cpu->getWidthMask();
+      } else {
+        inst->setIsBaseUnknown(gem5::triStateVal::TRUE);
+        baseRegUnknown = true;
+      }
+    }
+    if(inst->numSrcRegs() == 2){
+      if( inst->renamedSrcIdx(0)->testIsBase() && !inst->renamedSrcIdx(1)->testIsBase()){
+        rsVal = inst->getRegOperand(this,0);
+        tmpTagVal = std::invoke(cpu->hashingFuncPtr,cpu,rsVal,rsVal,cpu->getParaTagPos()) & cpu->getWidthMask();
+      } else if(!inst->renamedSrcIdx(0)->testIsBase() &&  inst->renamedSrcIdx(1)->testIsBase()){
+        rsVal = inst->getRegOperand(this,0);
+        tmpTagVal = std::invoke(cpu->hashingFuncPtr,cpu,rsVal,rsVal,cpu->getParaTagPos()) & cpu->getWidthMask();
+      } else {
+        inst->setIsBaseUnknown(gem5::triStateVal::TRUE);
+        baseRegUnknown = true;
+      }
+
+    }
+    if(inst->numSrcRegs() > 2){
+      inst->setIsBaseUnknown(gem5::triStateVal::TRUE);
+      baseRegUnknown = true;
+    } */
+
+  }
+  if (!baseRegUnknown){
+    std::string tagGenSrc = cpu->getParaTagGenSrc();
+    /* MSB = 1 means it's a legal sec tag value. */
+    tagVal = tmpTagVal | 0x8000'0000'0000'0000;
+    inst->setIsBaseUnknown(gem5::triStateVal::FALSE);
+    DPRINTF(KLPPRINT, "[StaticInst] Generating the secure tag of the inst. Inst VA: 0x%x, inst assembly: %s, "
+                      "mask: 0x%x, secure tag with mask: 0x%x, parameter-tag pos: %d, "
+                      "parameter-tag granularity: %d.\n",
+                      inst->pcState().instAddr(),
+                      disassemble(inst->pcState().instAddr(),0),
+                      cpu->getWidthMask(),
+                      tagVal,
+                      cpu->getParaTagPos(),
+                      cpu->getParaTagGranularity());}
+  if(!inst->isUncondi()){
+    if(baseRegUnknown){
+      ++cpu->getBaseStats().numBaseUnKnown;
+      ++cpu->getBaseStats().numBaseSum;
+    } else {
+      ++cpu->getBaseStats().numBaseUnKnown;
+      ++cpu->getBaseStats().numBaseSum;
+    }
+  }
   return tagVal;
 }
 // } [klp]

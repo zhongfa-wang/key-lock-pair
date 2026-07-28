@@ -1280,7 +1280,7 @@ LSQ::SingleDataRequest::buildPackets()
         _packets.push_back(
                 isLoad()
                     ?  (instruction()->isKlpLoad()?
-                        Packet::createRead(req(), this->unCondiState, instruction()->getSecTagInDynInst()):
+                        Packet::createRead(req(), this->unCondiState, instruction()->getSecTagInDynInst(), instruction()->getIsBaseUnknown()):
                         Packet::createRead(req()))
                     /* Only make read pkts carry the sec tags. */
                     // :  Packet::createWrite(req(), instruction()->getUncondiState(), secTagRegVal));
@@ -1350,7 +1350,7 @@ LSQ::SplitDataRequest::buildPackets()
             // [klp]
             assert(this->unCondiState == instruction()->getUncondiState());
             PacketPtr pkt = isLoad() ? (instruction()->isKlpLoad()?
-                                        Packet::createRead(req, this->unCondiState, instruction()->getSecTagInDynInst()):
+                                        Packet::createRead(req, this->unCondiState, instruction()->getSecTagInDynInst(), instruction()->getIsBaseUnknown()):
                                         Packet::createRead(req))
                                      : Packet::createWrite(req);
             /* DPRINTF(KLPDEBUG, "[LSQ] LSQ building a split sub req. SecTagVal: 0x%x, sub pkt obj addr: 0x%x.\n",

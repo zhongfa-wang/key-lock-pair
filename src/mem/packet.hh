@@ -390,6 +390,8 @@ class Packet : public Printable, public Extensible<Packet>
     /* A two-bit flag reflecting the memory instruction's non-speculative state.
     TRUE-non-speculative, FALSE-speculative, INIT-initial, no set. */
     triStateVal unCondiStatePkt = INIT;
+    /* Base addr unknown flag in pkt */
+    triStateVal baseUnknown = INIT;
 
     public:
     /* Is the corresponding inst a klpload (load that is protected by klp). */
@@ -403,6 +405,11 @@ class Packet : public Printable, public Extensible<Packet>
     /* Log the tag verification result in the packet. */
     void setPassSecTagVeri(triStateVal evalResult) {passSecTagVeriPktCarrier = evalResult;}
     triStateVal getPassSecTagVeri () const {return passSecTagVeriPktCarrier;}
+
+    bool isBaseUnknown() {
+      assert(baseUnknown != gem5::triStateVal::INIT);
+      return baseUnknown == gem5::triStateVal::TRUE;
+    }
     // } [klp]
 
   private:
@@ -1078,6 +1085,54 @@ class Packet : public Printable, public Extensible<Packet>
         return new Packet(req, makeWriteCmd(req));
     }
     // [klp] {
+    /* Alternative createRead and for baseAddr */
+    static PacketPtr
+    createRead(const RequestPtr &req, triStateVal unCondiState, const uint64_t secTag, triStateVal baseUnknownFlag)
+    {
+      return new Packet(req, makeReadCmd(req), (triStateVal)unCondiState, (uint64_t)secTag, baseUnknownFlag);
+    }
+    /* Alternative constructor of Packet for baseAddr. Used when sending pkts from lsq to cache.
+     Passes dynInst's instruction tag to the Packet. */
+     Packet(const RequestPtr &_req, MemCmd _cmd, triStateVal unCondiState, const uint64_t secTag, triStateVal baseUnknownFlag)
+     :  cmd(_cmd), id((PacketId)_req.get()), req(_req), 
+        data(nullptr), addr(0), _isSecure(false), size(0),
+        _qosValue(0),
+        htmReturnReason(HtmCacheFailure::NO_FAIL),
+        htmTransactionUid(0),
+        headerDelay(0), snoopDelay(0),
+        payloadDelay(0), senderState(NULL)
+     {
+       assert(baseUnknownFlag != gem5::triStateVal::INIT);
+       baseUnknown = baseUnknownFlag;
+       /* MSB == 1 means it's a legal sec tag value. */
+       if (baseUnknownFlag == gem5::triStateVal::FALSE){
+        assert((secTag & 0x8000'0000'0000'0000) == 0x8000'0000'0000'0000);
+       }
+       unCondiStatePkt = unCondiState;
+       secTagInPkt = secTag;
+       DPRINTF(KLPDEBUG,"[Packet] Creating packet of speculative req: target addr: 0x%x, uncondi state: %s, tag: %llx, inst SN: %llu, "
+                        "base known: %s.\n",
+               _req->getVaddr(),
+               unCondiState == gem5::triStateVal::TRUE? "Uncondi":"Speculative",
+               secTag,
+               _req->getReqInstSeqNum(),
+               baseUnknownFlag == gem5::triStateVal::FALSE? "Yes" : "No"
+             );
+         flags.clear();
+         if (req->hasPaddr()) {
+             addr = req->getPaddr();
+             flags.set(VALID_ADDR);
+             _isSecure = req->isSecure();
+         }
+         if (req->isHTMCmd()) {
+             flags.set(VALID_ADDR);
+             assert(addr == 0x0);
+         }
+         if (req->hasSize()) {
+             size = req->getSize();
+             flags.set(VALID_SIZE);
+         }
+     }
     /* Alternative createRead and createWrite methods */
     /* RW for single data requests */
     static PacketPtr

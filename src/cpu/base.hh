@@ -708,7 +708,18 @@ class BaseCPU : public ClockedObject
         statistics::Formula ipc;
         statistics::Scalar numWorkItemsStarted;
         statistics::Scalar numWorkItemsCompleted;
+        // [klp] {
+        statistics::Scalar numBaseKnown;
+        statistics::Scalar numBaseUnKnown;
+        statistics::Scalar numBaseSum;
+        statistics::Formula baseKnownRate;
+        statistics::Formula baseUnKnownRate;
+        // } [klp]
     } baseStats;
+    // [klp] {
+      public:
+      BaseCPUStats& getBaseStats() {return baseStats;}
+    // } [klp]
 
   private:
     std::vector<AddressMonitor> addressMonitor;

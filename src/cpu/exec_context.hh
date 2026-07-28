@@ -75,10 +75,14 @@ class ExecContext
     protected:
     /* The variable that stores the value of the sec tag val. */
     uint64_t secTagInDynInst;
+    /* Flag that revealing whether the base addr is unknown. */
+    triStateVal isBaseUnknown = gem5::triStateVal::INIT;
     public:
     /* Sets and gets the secTagInDynInst */
     void setSecTagInDynInst(uint64_t val) {secTagInDynInst = val;}
     uint64_t getSecTagInDynInst() {return secTagInDynInst;}
+    triStateVal getIsBaseUnknown() {return isBaseUnknown;}
+    void setIsBaseUnknown(triStateVal state) {isBaseUnknown = state;}
     // } [klp]
     virtual RegVal getRegOperand(const StaticInst *si, int idx) = 0;
     virtual void getRegOperand(const StaticInst *si, int idx, void *val) = 0;

@@ -48,6 +48,10 @@ def template LoadStoreDeclare {{
         Fault initiateAcc(ExecContext *, trace::InstRecord *) const override;
         Fault completeAcc(PacketPtr, ExecContext *,
                           trace::InstRecord *) const override;
+        
+        // [klp] {
+        bool isOffsetZero() const override { return offset == 0;}
+        // } [klp]
     };
 }};
 
@@ -89,9 +93,10 @@ def LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
     mem_flags = makeList(mem_flags)
     inst_flags = makeList(inst_flags)
     # [klp] {
+    o3_ea_code = ea_code
 
     secure_tag_gen_code = ''';\n
-    uint64_t stRegVal = this->genSecTagFramePC(xc, sp);
+    uint64_t stRegVal = this->genSecTag(xc);
     xc->setSecTagInDynInst(stRegVal);
     '''
 
@@ -99,22 +104,26 @@ def LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
     name_l = name.lower()
     if 'load' in base_class_l and not 'prefetch' in name_l:
         inst_flags += ('IsKlpLoad',)
-        ea_code = f"//{base_class_l}: Generating security tag for loads!\n" \
+        o3_ea_code = f"//{base_class_l}: Generating security tag for loads!\n" \
                     + secure_tag_gen_code + ea_code 
     elif 'store' in base_class_l and not 'cbo' in name_l:
         inst_flags += ('IsKlpStore',)
-        ea_code = f"//{base_class_l}: Generating security tag for stores!\n" + \
+        o3_ea_code = f"//{base_class_l}: Generating security tag for stores!\n" + \
                     secure_tag_gen_code + ea_code 
     elif 'prefetch' in name_l:
-        ea_code = f"//{name_l}: Generating security tag for prefetches!\n" + \
+        o3_ea_code = f"//{name_l}: Generating security tag for prefetches!\n" + \
                     secure_tag_gen_code + ea_code 
-    ea_code += "\n"
+    o3_ea_code += "\n"
 
     dst_reg_binding_dummy_code = ''';\n
      if (false) { St = 0x0; } [klp]: stop using st reg
     '''
     # memacc_code += dst_reg_binding_dummy_code
 
+    o3_iop = InstObjParams(name, Name, base_class,
+        {'offset_code': offset_code, 'ea_code': o3_ea_code,
+         'memacc_code': memacc_code, 'postacc_code': postacc_code },
+        inst_flags)
     # } [klp]
     iop = InstObjParams(name, Name, base_class,
         {'offset_code': offset_code, 'ea_code': ea_code,
@@ -143,7 +152,7 @@ def LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
         LoadStoreConstructor.subst(iop),
         decode_template.subst(iop),
         fullExecTemplate.subst(iop) +
-        initiateAccTemplate.subst(iop) +
+        initiateAccTemplate.subst(o3_iop) +
         completeAccTemplate.subst(iop))
 }};
 

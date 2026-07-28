@@ -238,6 +238,10 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
     if (p.tag_gen_src == "framePcGF2") {
       hashingFuncPtr = &BaseCPU::hashingGF2_16to4;
     }
+
+    if(p.tag_gen_src == "baseAddr") {
+      hashingFuncPtr = &BaseCPU::hashingGF2_16to4;
+    }
       
     // } [klp]
 }
@@ -276,8 +280,8 @@ BaseCPU::hashingGF2_64to4(uint64_t val1, uint64_t val2, uint64_t startpos) {
 
 uint64_t
 BaseCPU::hashingGF2_16to4(uint64_t val1, uint64_t val2, uint64_t startpos) {
-  uint64_t val = (val1 ^ val2);
-  uint16_t extractedVal = (val >> startpos) & 0xFFFF;
+  // uint64_t val = (val1 ^ val2);
+  uint16_t extractedVal = (val1 >> startpos) & 0xFFFF;
   uint64_t result = 0;
   uint16_t output_width = 4;
   for (size_t i=0; i < output_width; ++i){
@@ -486,12 +490,30 @@ BaseCPUStats::BaseCPUStats(statistics::Group *parent)
                "Number of work items this cpu started"),
       ADD_STAT(numWorkItemsCompleted, statistics::units::Count::get(),
                "Number of work items this cpu completed")
+      // [klp] {
+      ,
+      ADD_STAT(numBaseKnown,statistics::units::Count::get(), "Num of speculative loads whose base is known when generating sec tag."),
+      ADD_STAT(numBaseUnKnown,statistics::units::Count::get(), "Num of speculative loads whose base is unknown when generating sec tag."),
+      ADD_STAT(numBaseSum,statistics::units::Count::get(), "Sum of the speculative loads who generated sec tag."),
+      ADD_STAT(baseKnownRate,statistics::units::Rate<
+        statistics::units::Count, statistics::units::Count>::get(),
+        "baseKnownRate = numBaseKnown / numBaseSum"),
+      ADD_STAT(baseUnKnownRate,statistics::units::Rate<
+        statistics::units::Count, statistics::units::Count>::get(),
+        "baseUnKnownRate = numBaseUnKnown / numBaseSum")
+      // } [klp]
 {
     cpi.precision(6);
     cpi = numCycles / numInsts;
 
     ipc.precision(6);
     ipc = numInsts / numCycles;
+    // [klp] {
+    baseKnownRate.precision(6);
+    baseKnownRate = numBaseKnown / numBaseSum;
+    baseUnKnownRate.precision(6);
+    baseUnKnownRate = numBaseUnKnown / numBaseSum;
+    // } [klp]
 }
 
 void

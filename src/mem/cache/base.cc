@@ -1620,6 +1620,12 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                   stats.failCuzofTagMismatchNum++;
                   return true;
                 }
+                /* If the baseAddr is unknown, set the veri result as fail and return 
+                directly. Not satisfy the request.*/
+                if (pkt->isBaseUnknown()){
+                  pkt->setPassSecTagVeri(gem5::triStateVal::FALSE);
+                  return true;
+                }
               }
             }
             // } [klp]
