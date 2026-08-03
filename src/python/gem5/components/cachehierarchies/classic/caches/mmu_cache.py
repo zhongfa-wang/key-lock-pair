@@ -31,6 +31,7 @@ from m5.objects import (
 )
 
 from .....utils.override import *
+from m5.util import convert
 
 
 class MMUCache(Cache):
@@ -44,7 +45,7 @@ class MMUCache(Cache):
     def __init__(
         self,
         size: str,
-        assoc: int = 4,
+        assoc: int = 128,
         tag_latency: int = 1,
         data_latency: int = 1,
         response_latency: int = 1,
@@ -54,7 +55,7 @@ class MMUCache(Cache):
     ):
         super().__init__()
         self.size = size
-        self.assoc = assoc
+        self.assoc = int(convert.toMemorySize(size) / 64)
         self.tag_latency = tag_latency
         self.data_latency = data_latency
         self.response_latency = response_latency

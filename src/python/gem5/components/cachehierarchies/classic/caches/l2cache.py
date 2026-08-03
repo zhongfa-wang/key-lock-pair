@@ -44,11 +44,11 @@ class L2Cache(Cache):
     def __init__(
         self,
         size: str,
-        assoc: int = 16,
+        assoc: int = 8,
         tag_latency: int = 10,
-        data_latency: int = 10,
+        data_latency: int = 9,
         response_latency: int = 1,
-        mshrs: int = 20,
+        mshrs: int = 16,
         tgts_per_mshr: int = 12,
         writeback_clean: bool = False,
         clusivity: Clusivity = "mostly_incl",
@@ -65,6 +65,7 @@ class L2Cache(Cache):
         self.writeback_clean = writeback_clean
         self.clusivity = clusivity
         self.prefetcher = PrefetcherCls()
+        self.sequential_access = True
 
 
 # [klp] {

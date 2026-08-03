@@ -58,8 +58,10 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         l1i_size: str,
         l2_size: str,
         l3_size: str,
-        l1d_assoc: int = 8,
-        l1i_assoc: int = 8,
+        iptw_size: str,
+        dptw_size: str,
+        l1d_assoc: int = 2,
+        l1i_assoc: int = 2,
         l2_assoc: int = 16,
         l3_assoc: int = 16,
         membus: Optional[BaseXBar] = None,
@@ -78,6 +80,8 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
             l3_assoc=l3_assoc,
         )
 
+        self._iptw_size=iptw_size
+        self._dptw_size=dptw_size
         self.membus = membus if membus else self._get_default_membus()
 
     @overrides(AbstractClassicCacheHierarchy)
@@ -120,12 +124,12 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         self.l3cache = L3Cache(size=self._l3_size, assoc=self._l3_assoc)
         # ITLB Page walk caches
         self.iptw_caches = [
-            MMUCache(size="8KiB", writeback_clean=False)
+            MMUCache(size=self._iptw_size, writeback_clean=False)
             for _ in range(board.get_processor().get_num_cores())
         ]
         # DTLB Page walk caches
         self.dptw_caches = [
-            MMUCache(size="8KiB", writeback_clean=False)
+            MMUCache(size=self._dptw_size, writeback_clean=False)
             for _ in range(board.get_processor().get_num_cores())
         ]
 
@@ -261,7 +265,7 @@ class KLPPL1PL2SL3CacheHierarchy(PrivateL1PrivateL2SharedL3CacheHierarchy):
                 tag_pos=self._tag_pos,
                 tag_granularity=self._tag_granularity,
                 threat_model=self._threat_model,
-                size="8KiB",
+                size=self._iptw_size,
                 writeback_clean=False,
             )
             for _ in range(board.get_processor().get_num_cores())
@@ -273,7 +277,7 @@ class KLPPL1PL2SL3CacheHierarchy(PrivateL1PrivateL2SharedL3CacheHierarchy):
                 tag_pos=self._tag_pos,
                 tag_granularity=self._tag_granularity,
                 threat_model=self._threat_model,
-                size="8KiB",
+                size=self._dptw_size,
                 writeback_clean=False,
             )
             for _ in range(board.get_processor().get_num_cores())

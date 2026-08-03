@@ -87,13 +87,15 @@ requires(isa_required=ISA.RISCV)
 
 cache_hierarchy = KLPPL1PL2SL3CacheHierarchy(
     l1i_size="32KiB",
-    l1i_assoc=8,
-    l1d_size="32KiB",
-    l1d_assoc=8,
+    l1i_assoc=2,
+    l1d_size="64KiB",
+    l1d_assoc=2,
     l2_size="512KiB",
     l2_assoc=8,
     l3_size="2MiB",
     l3_assoc=16,
+    iptw_size="4KiB",
+    dptw_size="4KiB",
     # [klp] {
     tag_width=args.tag_width,
     tag_pos=args.tag_pos,

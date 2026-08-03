@@ -22,7 +22,7 @@ class L3Cache(Cache):
         size: str,
         assoc: int = 16,
         tag_latency: int = 20,
-        data_latency: int = 20,
+        data_latency: int = 19,
         response_latency: int = 1,
         mshrs: int = 64,
         tgts_per_mshr: int = 12,
@@ -41,6 +41,7 @@ class L3Cache(Cache):
         self.writeback_clean = writeback_clean
         self.clusivity = clusivity
         self.prefetcher = PrefetcherCls()
+        self.sequential_access = True
 
 
 # [klp] {

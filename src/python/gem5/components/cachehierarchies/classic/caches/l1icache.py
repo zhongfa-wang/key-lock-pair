@@ -46,11 +46,11 @@ class L1ICache(Cache):
     def __init__(
         self,
         size: str,
-        assoc: int = 8,
+        assoc: int = 2,
         tag_latency: int = 1,
         data_latency: int = 1,
         response_latency: int = 1,
-        mshrs: int = 16,
+        mshrs: int = 4,
         tgts_per_mshr: int = 20,
         writeback_clean: bool = True,
         PrefetcherCls: Type[BasePrefetcher] = StridePrefetcher,
