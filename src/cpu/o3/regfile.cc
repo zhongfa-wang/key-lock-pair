@@ -57,6 +57,9 @@ PhysRegFile::PhysRegFile(unsigned _numPhysicalIntRegs,
                          unsigned _numPhysicalCCRegs,
                          const BaseISA::RegClasses &reg_classes)
     : intRegFile(*reg_classes.at(IntRegClass), _numPhysicalIntRegs),
+      // [klp] {
+      intAddrProv(_numPhysicalIntRegs, noneAddrProv()),
+      // } [klp]
       floatRegFile(*reg_classes.at(FloatRegClass), _numPhysicalFloatRegs),
       vectorRegFile(*reg_classes.at(VecRegClass), _numPhysicalVecRegs),
       vectorElemRegFile(*reg_classes.at(VecElemClass), _numPhysicalVecRegs * (
@@ -140,6 +143,77 @@ PhysRegFile::PhysRegFile(unsigned _numPhysicalIntRegs,
     }
 }
 
+// [klp] {
+const AddrProv &
+PhysRegFile::getAddrProv(PhysRegIdPtr phys_reg) const
+{
+    /*
+      * The returned reference must not refer to a temporary object.
+      * Use a static canonical NONE provenance for non-integer registers.
+      */
+    static const AddrProv no_addr_prov = noneAddrProv();
+
+    if (phys_reg == nullptr || !phys_reg->is(IntRegClass))
+        return no_addr_prov;
+
+    const auto idx = static_cast<size_t>(phys_reg->index());
+
+    assert(idx < intAddrProv.size());
+
+    return intAddrProv[idx];
+}
+
+void
+PhysRegFile::setAddrProv(
+    PhysRegIdPtr phys_reg,
+    const AddrProv &prov)
+{
+    /*
+      * Address provenance is currently defined only for integer
+      * physical registers.
+      */
+    if (phys_reg == nullptr || !phys_reg->is(IntRegClass))
+        return;
+
+    const auto idx = static_cast<size_t>(phys_reg->index());
+
+    assert(idx < intAddrProv.size());
+
+    /*
+      * Normalize the metadata here so that NONE and AMBIGUOUS can
+      * never retain a stale candidate.
+      */
+    switch (prov.state) {
+      case AddrProv::State::NONE:
+        intAddrProv[idx] = noneAddrProv();
+        return;
+
+      case AddrProv::State::WEAK:
+        intAddrProv[idx] = weakAddrProv(prov.candidate);
+        return;
+
+      case AddrProv::State::STRONG:
+        intAddrProv[idx] = strongAddrProv(prov.candidate);
+        return;
+
+      case AddrProv::State::AMBIGUOUS:
+        intAddrProv[idx] = ambiguousAddrProv();
+        return;
+    }
+
+    /*
+      * Defensive fallback in case an invalid enum value is supplied.
+      * Treat it conservatively as ambiguous.
+      */
+    intAddrProv[idx] = ambiguousAddrProv();
+}
+
+void
+PhysRegFile::clearAddrProv(PhysRegIdPtr phys_reg)
+{
+    setAddrProv(phys_reg, noneAddrProv());
+}
+// } [klp]
 
 void
 PhysRegFile::initFreeList(UnifiedFreeList *freeList)

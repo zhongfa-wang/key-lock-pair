@@ -481,6 +481,17 @@ class IEW
         /* Scalar statistics*/
         /* Stat for the total number of the insts whose tag was verified.*/
         statistics::Scalar tagVeriInstNum;
+
+        /*
+        * Number of dynamic KLP loads whose EA base provenance was AMBIGUOUS
+        * when the load first executed.
+        */
+        statistics::Scalar ambiguousLoadNum;
+
+        /*
+        * ambiguousLoadNum / tagVeriInstNum
+        */
+        statistics::Formula ambiguousLoadRate;
         // } [klp]
     } iewStats;
 

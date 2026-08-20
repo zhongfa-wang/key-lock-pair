@@ -47,6 +47,9 @@
 
 #include "arch/generic/isa.hh"
 #include "base/trace.hh"
+// [klp] {
+#include "cpu/addr_prov.hh"
+// } [klp]
 #include "cpu/o3/comm.hh"
 #include "cpu/regfile.hh"
 #include "debug/IEW.hh"
@@ -73,6 +76,15 @@ class PhysRegFile
   private:
     /** Integer register file. */
     RegFile intRegFile;
+    // [klp] {
+    /**
+    * Address provenance metadata for physical integer registers.
+    *
+    * This vector uses the physical integer register index as its index.
+    * It therefore has exactly numPhysicalIntRegs entries.
+    */
+    std::vector<AddrProv> intAddrProv;
+    // } [klp]
     std::vector<PhysRegId> intRegIds;
 
     /** Floating point register file. */
@@ -168,6 +180,34 @@ class PhysRegFile
     PhysRegIdPtr getMiscRegId(RegIndex reg_idx) {
         return &miscRegIds[reg_idx];
     }
+    // [klp] {
+    /**
+    * Return the address provenance associated with a physical integer
+    * register.
+    *
+    * Non-integer registers return a canonical NONE provenance.
+    */
+    const AddrProv &
+    getAddrProv(PhysRegIdPtr phys_reg) const;
+
+    /**
+    * Set the address provenance associated with a physical integer
+    * register.
+    *
+    * Writes to non-integer registers are ignored.
+    */
+    void
+    setAddrProv(PhysRegIdPtr phys_reg, const AddrProv &prov);
+
+    /**
+    * Clear the address provenance associated with a physical register.
+    *
+    * For integer registers this writes a canonical NONE provenance.
+    * Other register classes are ignored.
+    */
+    void
+    clearAddrProv(PhysRegIdPtr phys_reg);
+    // } [klp]
 
     RegVal
     getReg(PhysRegIdPtr phys_reg) const

@@ -403,6 +403,65 @@ DynInst::completeAcc(PacketPtr pkt)
 
     fault = staticInst->completeAcc(pkt, this, traceData);
 
+    // [klp] {
+    /*
+     * A successful load result becomes a new WEAK provenance seed,
+     * independently of the provenance used to calculate its EA.
+     *
+     * pkt == nullptr is possible when the memory-access predicate is false.
+     * In that case there is no value returned from memory and no WEAK seed
+     * should be created.
+     */
+    if (fault == NoFault && pkt != nullptr && isLoad()) {
+        for (int dest_idx = 0;
+             dest_idx < static_cast<int>(numDestRegs());
+             ++dest_idx) {
+            PhysRegIdPtr dest_reg = renamedDestIdx(dest_idx);
+
+            /*
+             * Address provenance is currently maintained only for integer
+             * physical registers. This also excludes floating-point and
+             * vector load destinations.
+             */
+            if (dest_reg == nullptr ||
+                dest_reg->is(InvalidRegClass) ||
+                !dest_reg->is(IntRegClass)) {
+                continue;
+            }
+
+            /*
+             * completeAcc() has already performed op_wb, so this is the
+             * actual value returned by the load and stored in the physical
+             * destination register.
+             */
+            const RegVal loaded_value =
+                getDestRegOperand(staticInst.get(), dest_idx);
+
+            setAddrProvOperand(
+                staticInst.get(),
+                dest_idx,
+                weakAddrProv(loaded_value));
+
+#ifndef NDEBUG
+            const AddrProv &stored_prov =
+                cpu->getAddrProv(dest_reg);
+
+            assert(stored_prov.state == AddrProv::State::WEAK);
+            assert(stored_prov.candidate == loaded_value);
+#endif
+
+            DPRINTF(KLPDEBUG,
+                    "[DynInst] Load destination provenance seeded WEAK. "
+                    "Inst PC: %#x, SN: %llu, phys reg: %d, "
+                    "candidate: %#x.\n",
+                    pcState().instAddr(),
+                    seqNum,
+                    dest_reg->index(),
+                    loaded_value);
+        }
+    }
+    // } [klp]
+
     thread->noSquashFromTC = no_squash_from_TC;
 
     return fault;

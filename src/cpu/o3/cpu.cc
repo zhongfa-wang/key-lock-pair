@@ -252,6 +252,14 @@ CPU::CPU(const BaseO3CPUParams &params)
                 PhysRegIdPtr phys_reg = freeList.getReg(type);
                 renameMap[tid].setEntry(id, phys_reg);
                 commitRenameMap[tid].setEntry(id, phys_reg);
+                // [klp] {
+                const RegId flat_id = id.flatten(*isa[tid]);
+
+                resetArchAddrProv(
+                    flat_id,
+                    phys_reg,
+                    tid);
+                // } [klp]
             }
         }
     }
@@ -643,6 +651,10 @@ CPU::insertThread(ThreadID tid)
         for (auto &id: *regClasses.at(type)) {
             PhysRegIdPtr phys_reg = freeList.getReg(type);
             renameMap[tid].setEntry(id, phys_reg);
+            // [klp] {
+            const RegId flat_id = id.flatten(*isa[tid]);
+            resetArchAddrProv(flat_id, phys_reg, tid);
+            // } [klp]
             scoreboard.setReg(phys_reg);
         }
     }
@@ -973,6 +985,74 @@ CPU::setMiscReg(int misc_reg, RegVal val, ThreadID tid)
     isa[tid]->setMiscReg(misc_reg, val);
 }
 
+// [klp] {
+RegVal
+CPU::getRegNoStats(PhysRegIdPtr phys_reg) const
+{
+    if (phys_reg == nullptr || phys_reg->is(InvalidRegClass))
+        return 0;
+
+    return regFile.getReg(phys_reg);
+}
+
+const AddrProv &
+CPU::getAddrProv(PhysRegIdPtr phys_reg) const
+{
+    return regFile.getAddrProv(phys_reg);
+}
+
+void
+CPU::setAddrProv(
+    PhysRegIdPtr phys_reg,
+    const AddrProv &prov)
+{
+    regFile.setAddrProv(phys_reg, prov);
+}
+
+void
+CPU::resetArchAddrProv(
+    const RegId &flat_reg,
+    PhysRegIdPtr phys_reg,
+    ThreadID tid)
+{
+    if (!flat_reg.is(IntRegClass))
+        return;
+
+    assert(phys_reg != nullptr);
+    assert(phys_reg->is(IntRegClass));
+    assert(tid < numThreads);
+
+    regFile.clearAddrProv(phys_reg);
+
+    const bool is_strong_seed =
+        isa[tid]->isAddrProvStrongSeed(flat_reg);
+
+    if (is_strong_seed) {
+        const RegVal value = regFile.getReg(phys_reg);
+
+        regFile.setAddrProv(
+            phys_reg,
+            strongAddrProv(value));
+    }
+
+#ifndef NDEBUG
+    /*
+     * Postcondition: every direct architectural integer write must
+     * completely replace the previous provenance.
+     */
+    const AddrProv &prov = regFile.getAddrProv(phys_reg);
+
+    if (is_strong_seed) {
+        assert(prov.state == AddrProv::State::STRONG);
+        assert(prov.candidate == regFile.getReg(phys_reg));
+    } else {
+        assert(prov.state == AddrProv::State::NONE);
+        assert(prov.candidate == 0);
+    }
+#endif
+}
+// } [klp]
+
 RegVal
 CPU::getReg(PhysRegIdPtr phys_reg, ThreadID tid)
 {
@@ -1123,6 +1203,9 @@ CPU::setArchReg(const RegId &reg, RegVal val, ThreadID tid)
     const RegId flat = reg.flatten(*isa[tid]);
     PhysRegIdPtr phys_reg = commitRenameMap[tid].lookup(flat);
     regFile.setReg(phys_reg, val);
+    // [klp] {
+    resetArchAddrProv(flat, phys_reg, tid);
+    // } [klp]
 }
 
 void
@@ -1131,6 +1214,9 @@ CPU::setArchReg(const RegId &reg, const void *val, ThreadID tid)
     const RegId flat = reg.flatten(*isa[tid]);
     PhysRegIdPtr phys_reg = commitRenameMap[tid].lookup(flat);
     regFile.setReg(phys_reg, val);
+    // [klp] {
+    resetArchAddrProv(flat, phys_reg, tid);
+    // } [klp]
 }
 
 const PCStateBase &

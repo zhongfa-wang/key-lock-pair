@@ -142,6 +142,9 @@ class ISA : public BaseISA
     void setMiscRegNoEffect(RegIndex idx, RegVal val) override;
     void setMiscReg(RegIndex idx, RegVal val) override;
 
+    // [klp] {
+    bool isAddrProvStrongSeed(const RegId &reg) const override;
+    // } [klp]
     // Derived class could provide knowledge of non-standard CSRs to other
     // components by overriding the two getCSRxxxMap here and properly
     // implementing the corresponding read/set function. However, customized

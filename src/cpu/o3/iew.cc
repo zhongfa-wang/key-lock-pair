@@ -194,8 +194,25 @@ IEW::IEWStats::IEWStats(CPU *cpu)
     ,
     ADD_STAT(tagVeriInstNum,statistics::units::Count::get(),
     "The total number of insts whose tag was verified.")
+
+    ,
+    ADD_STAT(
+      ambiguousLoadNum,
+      statistics::units::Count::get(),
+      "Number of dynamic KLP loads with AMBIGUOUS EA provenance"),
+    ADD_STAT(
+        ambiguousLoadRate,
+        statistics::units::Ratio::get(),
+        "Fraction of dynamic KLP loads with AMBIGUOUS EA provenance")
     // } [klp]
 {
+    // [klp] {
+      ambiguousLoadRate.precision(6);
+
+      ambiguousLoadRate =
+          ambiguousLoadNum /
+          tagVeriInstNum;
+    // } [klp]
     instsToCommit
         .init(cpu->numThreads)
         .flags(statistics::total);
@@ -1202,6 +1219,13 @@ IEW::executeInsts()
                 /* klp stats: update tagVeriInstNum */
                 if(fault == NoFault && inst->isKlpLoad() && !inst->statsUpdated[0]){
                     ++iewStats.tagVeriInstNum;
+                    const AddrProv ea_prov = inst->getAddrProvOperand(
+                            inst->staticInst.get(),
+                            0);
+                    if (ea_prov.state ==
+                      AddrProv::State::AMBIGUOUS) {
+                      ++iewStats.ambiguousLoadNum;
+                      }
                     inst->statsUpdated[0] = true;
                 }
                 // } [klp]

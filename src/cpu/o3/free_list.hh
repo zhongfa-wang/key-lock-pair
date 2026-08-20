@@ -173,6 +173,17 @@ class UnifiedFreeList
     void
     addReg(PhysRegIdPtr freed_reg)
     {
+      // [klp] {
+      /*
+        * Once a physical register is returned to the free list, its old
+        * architectural value and provenance are no longer reachable through
+        * a valid rename mapping. Clear provenance before making it available
+        * for reuse.
+        *
+        * clearAddrProv() is a no-op for non-integer register classes.
+        */
+        regFile->clearAddrProv(freed_reg);
+      // } [klp]
         freeLists[freed_reg->classValue()].addReg(freed_reg);
     }
 

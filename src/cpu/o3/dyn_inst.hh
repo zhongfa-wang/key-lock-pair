@@ -1187,22 +1187,65 @@ class DynInst : public ExecContext, public RefCounted
         cpu->getReg(reg, val, threadNumber);
     }
     // [klp] {
-    RegVal
-    getDestRegVal(const StaticInst *si, int idx)
+    // RegVal
+    // getDestRegVal(const StaticInst *si, int idx)
+    // {
+    //     const PhysRegIdPtr reg = renamedDestIdx(idx);
+    //     if (reg->is(InvalidRegClass))
+    //         return 0;
+    //     return cpu->getReg(reg, threadNumber);
+    // }
+
+    // void
+    // getDestRegVal(const StaticInst *si, int idx, void *val)
+    // {
+    //     const PhysRegIdPtr reg = renamedDestIdx(idx);
+    //     if (reg->is(InvalidRegClass))
+    //         return;
+    //     cpu->getReg(reg, val, threadNumber);
+    // }
+    AddrProv
+    getAddrProvOperand(const StaticInst *, int src_idx) override
     {
-        const PhysRegIdPtr reg = renamedDestIdx(idx);
-        if (reg->is(InvalidRegClass))
-            return 0;
-        return cpu->getReg(reg, threadNumber);
+        const PhysRegIdPtr reg = renamedSrcIdx(src_idx);
+
+        if (reg == nullptr ||
+            reg->is(InvalidRegClass) ||
+            !reg->is(IntRegClass)) {
+            return noneAddrProv();
+        }
+
+        return cpu->getAddrProv(reg);
     }
 
     void
-    getDestRegVal(const StaticInst *si, int idx, void *val)
+    setAddrProvOperand(
+        const StaticInst *,
+        int dest_idx,
+        const AddrProv &prov) override
     {
-        const PhysRegIdPtr reg = renamedDestIdx(idx);
-        if (reg->is(InvalidRegClass))
+        const PhysRegIdPtr reg = renamedDestIdx(dest_idx);
+
+        if (reg == nullptr ||
+            reg->is(InvalidRegClass) ||
+            !reg->is(IntRegClass)) {
             return;
-        cpu->getReg(reg, val, threadNumber);
+        }
+
+        cpu->setAddrProv(reg, prov);
+    }
+
+    RegVal
+    getDestRegOperand(const StaticInst *, int dest_idx) override
+    {
+        const PhysRegIdPtr reg = renamedDestIdx(dest_idx);
+
+        if (reg == nullptr ||
+          reg->is(InvalidRegClass) ||
+          !reg->is(IntRegClass)) {
+            return 0;}
+
+        return cpu->getRegNoStats(reg);
     }
     // } [klp]
     void *

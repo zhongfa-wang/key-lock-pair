@@ -488,6 +488,22 @@ ISA::readMiscRegNoEffect(RegIndex idx) const
     return miscRegFile[idx];
 }
 
+
+// [klp] {
+bool
+ISA::isAddrProvStrongSeed(const RegId &reg) const
+{
+    if (!reg.is(IntRegClass))
+        return false;
+
+    const RegIndex idx = reg.index();
+
+    return idx == int_reg::Sp.index() ||
+            idx == int_reg::Gp.index() ||
+            idx == int_reg::Tp.index();
+}
+// } [klp]
+
 RegVal
 ISA::readMiscReg(RegIndex idx)
 {

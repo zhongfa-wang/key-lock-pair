@@ -43,6 +43,7 @@
 #define __CPU_EXEC_CONTEXT_HH__
 
 #include "base/types.hh"
+#include "cpu/addr_prov.hh"
 #include "cpu/base.hh"
 #include "cpu/reg_class.hh"
 #include "cpu/static_inst_fwd.hh"
@@ -74,7 +75,7 @@ class ExecContext
     // [klp] {
     protected:
     /* The variable that stores the value of the sec tag val. */
-    uint64_t secTagInDynInst;
+    uint64_t secTagInDynInst = 0;
     /* Flag that revealing whether the base addr is unknown. */
     triStateVal isBaseUnknown = gem5::triStateVal::INIT;
     public:
@@ -83,6 +84,48 @@ class ExecContext
     uint64_t getSecTagInDynInst() {return secTagInDynInst;}
     triStateVal getIsBaseUnknown() {return isBaseUnknown;}
     void setIsBaseUnknown(triStateVal state) {isBaseUnknown = state;}
+
+    /*
+    * Address provenance interfaces.
+    *
+    * Default implementations are intentionally conservative so that CPU
+    * models without physical-register provenance support do not need to
+    * implement these methods.
+    */
+
+    /**
+    * Read provenance from one of the instruction's source operands.
+    *
+    * src_idx is an operand index, not an architectural register index.
+    */
+    virtual AddrProv
+    getAddrProvOperand(const StaticInst *, int)
+    {
+        return noneAddrProv();
+    }
+
+    /**
+    * Write provenance to one of the instruction's destination operands.
+    *
+    * dest_idx is an operand index, not an architectural register index.
+    */
+    virtual void
+    setAddrProvOperand(const StaticInst *, int, const AddrProv &)
+    {
+    }
+
+    /**
+    * Read the actual runtime value currently stored in one of the
+    * instruction's destination operands.
+    *
+    * This is primarily used after load writeback to construct a WEAK
+    * provenance seed from the loaded value.
+    */
+    virtual RegVal
+    getDestRegOperand(const StaticInst *, int)
+    {
+        return 0;
+    }
     // } [klp]
     virtual RegVal getRegOperand(const StaticInst *si, int idx) = 0;
     virtual void getRegOperand(const StaticInst *si, int idx, void *val) = 0;

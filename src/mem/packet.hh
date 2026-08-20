@@ -1107,7 +1107,12 @@ class Packet : public Printable, public Extensible<Packet>
        /* MSB == 1 means it's a legal sec tag value. */
        if (baseUnknownFlag == gem5::triStateVal::FALSE){
         assert((secTag & 0x8000'0000'0000'0000) == 0x8000'0000'0000'0000);
-       }
+       } else {
+        /*
+         * NONE、AMBIGUOUS 或被 policy 拒绝的 WEAK。
+         */
+        assert(secTag == 0);
+    }
        unCondiStatePkt = unCondiState;
        secTagInPkt = secTag;
        DPRINTF(KLPDEBUG,"[Packet] Creating packet of speculative req: target addr: 0x%x, uncondi state: %s, tag: %llx, inst SN: %llu, "

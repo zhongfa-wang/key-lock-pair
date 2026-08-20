@@ -118,6 +118,20 @@ class CPU : public BaseCPU
 
   private:
 
+    // [klp] {
+    /**
+    * Reinitialize provenance after a direct architectural-register write.
+    *
+    * Integer registers are first cleared to NONE. Registers selected by the
+    * ISA policy are then initialized as STRONG using their current physical
+    * register value.
+    */
+    void
+    resetArchAddrProv(
+        const RegId &flat_reg,
+        PhysRegIdPtr phys_reg,
+        ThreadID tid);
+    // } [klp]
     /** The tick event used for scheduling CPU ticks. */
     EventFunctionWrapper tickEvent;
 
@@ -319,6 +333,16 @@ class CPU : public BaseCPU
 
     void setReg(PhysRegIdPtr phys_reg, RegVal val, ThreadID tid);
     void setReg(PhysRegIdPtr phys_reg, const void *val, ThreadID tid);
+
+    // [klp] {
+    RegVal getRegNoStats(PhysRegIdPtr phys_reg) const;
+
+    const AddrProv &
+    getAddrProv(PhysRegIdPtr phys_reg) const;
+    
+    void
+    setAddrProv(PhysRegIdPtr phys_reg, const AddrProv &prov);
+    // } [klp]
 
     /** Architectural register accessors.  Looks up in the commit
      * rename table to obtain the true physical index of the

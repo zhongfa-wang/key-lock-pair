@@ -166,7 +166,10 @@ BaseCache::~BaseCache()
 // [klp] {
 triStateVal
 BaseCache::verifySecTagInCache(const PacketPtr pkt)
-{
+
+{ assert(pkt->isKlpRead);
+  assert(!pkt->isUnCondiReExe());
+  assert(!pkt->isBaseUnknown());
   /* Tag verification always happens after a cache hit hence no need to check
   if the blk is valid.*/
   CacheBlk *blk = tags->findBlock({pkt->getAddr(), pkt->isSecure()});
@@ -1601,6 +1604,27 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
             if(cache_level == enums::CacheLevel::L1D && pkt->isKlpRead){
               /* If the packet is made by a speculative load, perform tag verification.*/
               if(!pkt->isUnCondiReExe()){
+                
+                /* If the baseAddr is unknown, set the veri result as fail and return 
+                directly. Not satisfy the request.*/
+                if (pkt->isBaseUnknown()){
+                  pkt->setPassSecTagVeri(gem5::triStateVal::FALSE);
+
+                  /*
+                  * Count this as a rejected speculative request, but do
+                  * not classify it as a tag mismatch.
+                  */
+                  stats.tagVeriFailNum++;
+
+                  DPRINTF(KLPDEBUG,
+                          "[BaseCache] Rejecting speculative KLP load "
+                          "because credential is unavailable. "
+                          "Target addr: %#lx, request size: %#x.\n",
+                          pkt->req->getVaddr(),
+                          pkt->getSize());
+                  return true;
+                }
+                
                 gem5::triStateVal secTagVeriResult = verifySecTagInCache(pkt);
                 assert(secTagVeriResult != gem5::triStateVal::INIT);
                 /* If the tag verifies to pass, then the cache performs as normal. */
@@ -1610,20 +1634,14 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                         pkt->req->getVaddr(),
                         pkt->getSize(),
                         pkt->passSecTagVeri()?"Pass":"Fail");
-                if (secTagVeriResult == gem5::triStateVal::TRUE && pkt->isKlpRead) {
+                if (secTagVeriResult == gem5::triStateVal::TRUE) {
                   stats.tagVeriPassNum++;
                 }
                 /* If not, the cache sets the flag in packet as not pass and returns
                 directly. No need to satisfy the request. */
-                if (secTagVeriResult == gem5::triStateVal::FALSE && pkt->isKlpRead) {
+                if (secTagVeriResult == gem5::triStateVal::FALSE) {
                   stats.tagVeriFailNum++;
                   stats.failCuzofTagMismatchNum++;
-                  return true;
-                }
-                /* If the baseAddr is unknown, set the veri result as fail and return 
-                directly. Not satisfy the request.*/
-                if (pkt->isBaseUnknown()){
-                  pkt->setPassSecTagVeri(gem5::triStateVal::FALSE);
                   return true;
                 }
               }
