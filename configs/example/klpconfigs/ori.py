@@ -43,6 +43,30 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--l1i_prefetcher",
+    choices=("on", "off"),
+    default="on",
+    help="Enable or disable the L1 instruction-cache stride prefetcher.",
+)
+parser.add_argument(
+    "--l1d_prefetcher",
+    choices=("on", "off"),
+    default="on",
+    help="Enable or disable the L1 data-cache stride prefetcher.",
+)
+parser.add_argument(
+    "--l2_prefetcher",
+    choices=("on", "off"),
+    default="on",
+    help="Enable or disable the L2 stride prefetcher.",
+)
+parser.add_argument(
+    "--l3_prefetcher",
+    choices=("on", "off"),
+    default="on",
+    help="Enable or disable the L3 stride prefetcher.",
+)
+parser.add_argument(
     "cmd",
     nargs=argparse.REMAINDER,
     help="Path to and arguments for the simualted binary.",
@@ -67,6 +91,10 @@ cache_hierarchy = PrivateL1PrivateL2SharedL3CacheHierarchy(
     l3_assoc=16,
     iptw_size="4KiB",
     dptw_size="4KiB",
+    l1i_prefetcher=args.l1i_prefetcher == "on",
+    l1d_prefetcher=args.l1d_prefetcher == "on",
+    l2_prefetcher=args.l2_prefetcher == "on",
+    l3_prefetcher=args.l3_prefetcher == "on",
 )
 
 # Setup the system memory.

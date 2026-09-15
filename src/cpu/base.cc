@@ -131,8 +131,8 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
       // [klp] {
       tag_width(p.tag_width), tag_pos(p.tag_pos), tag_granularity(p.tag_granularity),
       threat_model(p.threat_model), tag_gen_src(p.tag_gen_src),
-      tagBitMask(p.system->initWidthMask(p.tag_width, p.tag_pos)),
-      // tagBitMask(p.system->initWidthMask(p.tag_width)), // Mask used in GF2
+      // Hash functions return low-bit tags; tag_pos only selects hash input.
+      tagBitMask(p.system->initWidthMask(p.tag_width)),
       // } [klp]
       _instRequestorId(p.system->getRequestorId(this, "inst")),
       _dataRequestorId(p.system->getRequestorId(this, "data")),
@@ -240,7 +240,7 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
     }
 
     if(p.tag_gen_src == "baseAddr") {
-      hashingFuncPtr = &BaseCPU::hashingGF2_16to4;
+      hashingFuncPtr = &BaseCPU::hashingGF2_44to4_L5;
     }
       
     // } [klp]
@@ -291,6 +291,25 @@ BaseCPU::hashingGF2_16to4(uint64_t val1, uint64_t val2, uint64_t startpos) {
     }
   }
   return result;
+}
+uint64_t
+BaseCPU::hashingGF2_44to4_L5(uint64_t val1, uint64_t, uint64_t)
+{
+    // Fixed address bits [47:4], independent of tag_pos. Matrix from
+    // 52914fe94e; use 64-bit parity so all 44 input bits participate.
+    const uint64_t active_addr = (val1 >> 4) & 0xFFFFFFFFFFFULL;
+    constexpr uint64_t masks[4] = {
+        0x5B7AFA77BDFULL,
+        0x37E9DEBBDF7ULL,
+        0x73AF6BDDF7BULL,
+        0xCEB7ADEF7BDULL,
+    };
+    uint64_t result = 0;
+    for (unsigned int i = 0; i < 4; ++i) {
+        result |= static_cast<uint64_t>(
+            __builtin_parityll(active_addr & masks[i])) << i;
+    }
+    return result;
 }
 // } [klp]
 

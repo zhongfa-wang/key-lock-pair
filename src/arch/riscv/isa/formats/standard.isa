@@ -447,8 +447,30 @@ def template CSRExecute {{
     }
 }};
 
+let {{
+    def annotateAddrProv(iop, name):
+        # Only actual arithmetic immediates are comparison operands. Other
+        # I-format encodings can contain opcode fields instead of data.
+        if name in ('addi', 'addiw', 'slti', 'sltiu', 'c_addi', 'c_addiw',
+                    'c_addi16sp', 'c_addi4spn', 'c_li', 'c_mv'):
+            rule = 'CompareImmediate'
+        elif name in ('lui', 'auipc', 'c_lui'):
+            rule = 'SeedResult'
+        elif name in ('and', 'or', 'xor', 'c_and', 'c_or', 'c_xor'):
+            rule = 'PreserveSelected'
+        elif name in ('andi', 'ori', 'ori_hint', 'xori', 'c_andi',
+                      'sll', 'srl', 'sra', 'sllw', 'srlw', 'sraw',
+                      'slli', 'srli', 'srai', 'slliw', 'srliw', 'sraiw',
+                      'c_slli', 'c_srli', 'c_srai'):
+            rule = 'PreserveFirst'
+        else:
+            return
+        iop.constructor += '\naddrProvRule = AddrProvRule::' + rule + ';\n'
+}};
+
 def format ROp(code, *opt_flags) {{
     iop = InstObjParams(name, Name, 'RegOp', code, opt_flags)
+    annotateAddrProv(iop, name)
     header_output = BasicDeclare.subst(iop)
     decoder_output = BasicConstructor.subst(iop)
     decode_block = BasicDecode.subst(iop)
@@ -461,6 +483,7 @@ def format IOp(code, imm_type='int64_t', imm_code='imm = sext<12>(IMM12);',
     iop = InstObjParams(name, Name, 'ImmOp<%s>' % imm_type,
         {'imm_code': imm_code, 'code': code,
          'regs': ','.join(regs)}, opt_flags)
+    annotateAddrProv(iop, name)
     header_output = ImmDeclare.subst(iop)
     decoder_output = ImmConstructor.subst(iop)
     decode_block = BasicDecode.subst(iop)
@@ -512,6 +535,7 @@ def format UOp(code, *opt_flags) {{
     iop = InstObjParams(name, Name, 'ImmOp<int64_t>',
         {'code': code, 'imm_code': 'imm = IMM20;',
          'regs': ','.join(regs)}, opt_flags)
+    annotateAddrProv(iop, name)
     header_output = ImmDeclare.subst(iop)
     decoder_output = ImmConstructor.subst(iop)
     decode_block = BasicDecode.subst(iop)

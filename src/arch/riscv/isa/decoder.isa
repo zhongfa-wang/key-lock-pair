@@ -52,18 +52,6 @@ decode QUADRANT default Unknown::unknown() {
                 return std::make_shared<IllegalInstFault>("immediate = 0",
                                                            machInst);
             Rp2 = rvSext(sp + imm);
-
-            // [klp] {
-            const AddrProv sp_prov =
-                xc->getAddrProvOperand(this, 0);
-
-            xc->setAddrProvOperand(
-                this,
-                0,
-                propagateBasePreserving(
-                    sp_prov,
-                    sp_prov.candidate));
-            // } [klp]
         }}, uint64_t);
         format CompressedLoad {
             0x1: decode ENABLE_ZCD {
@@ -212,18 +200,6 @@ decode QUADRANT default Unknown::unknown() {
                 }
             }
             Rc1_sd = rvSext(Rc1_sd + imm);
-
-            // [klp] {
-            const AddrProv src_prov =
-                xc->getAddrProvOperand(this, 0);
-
-            xc->setAddrProvOperand(
-                this,
-                0,
-                propagateBasePreserving(
-                    src_prov,
-                    src_prov.candidate));
-            // } [klp]
         }});
         0x1: decode RVTYPE {
             0x0: CJOp::c_jal({{
@@ -259,18 +235,6 @@ decode QUADRANT default Unknown::unknown() {
                             "immediate = 0", machInst);
                 }
                 sp_sd = rvSext(sp_sd + imm);
-
-                // [klp] {
-                const AddrProv old_sp_prov =
-                    xc->getAddrProvOperand(this, 0);
-
-                xc->setAddrProvOperand(
-                    this,
-                    0,
-                    propagateBasePreserving(
-                        old_sp_prov,
-                        old_sp_prov.candidate));
-                // } [klp]
             }});
             default: CIOp::c_lui({{
                 imm = sext<6>(CIMM5 | (CIMM1 << 5)) << 12;
@@ -477,18 +441,6 @@ decode QUADRANT default Unknown::unknown() {
                 default: CROp::c_mv({{
                     // RC1 == 0 is HINT
                     Rc1 = rvSext(Rc2);
-
-                    // [klp] {
-                    const AddrProv src_prov =
-                        xc->getAddrProvOperand(this, 0);
-
-                    xc->setAddrProvOperand(
-                        this,
-                        0,
-                        propagateBasePreserving(
-                            src_prov,
-                            src_prov.candidate));
-                    // } [klp]
                 }});
             }
             0x1: decode RC2 {
@@ -509,27 +461,7 @@ decode QUADRANT default Unknown::unknown() {
                 }
                 default: CompressedROp::c_add({{
                     // RC1 == 0 is HINT
-                    // [klp] {
-                    const AddrProv rc1_prov =
-                        xc->getAddrProvOperand(this, 0);
-
-                    const AddrProv rc2_prov =
-                        xc->getAddrProvOperand(this, 1);
-                    // } [klp]
                     Rc1_sd = rvSext(Rc1_sd + Rc2_sd);
-
-                    // [klp] {
-                    const AddrProv dest_prov =
-                        mergeAddrAdd(
-                            rc1_prov,
-                            rc2_prov,
-                            static_cast<RegVal>(Rc1));
-
-                    xc->setAddrProvOperand(
-                        this,
-                        0,
-                        dest_prov);
-                    // } [klp]
                 }});
             }
         }
@@ -1619,21 +1551,6 @@ decode QUADRANT default Unknown::unknown() {
             format IOp {
                 0x0: addi({{
                     Rd_sd = rvSext(Rs1_sd + imm);
-
-                // [klp] {
-                const AddrProv src_prov =
-                    xc->getAddrProvOperand(this, 0);
-
-                const AddrProv dest_prov =
-                    propagateBasePreserving(
-                        src_prov,
-                        src_prov.candidate);
-
-                xc->setAddrProvOperand(
-                    this,
-                    0,
-                    dest_prov);
-                // } [klp]
                 }});
                 0x2: slti({{
                     Rd = (rvSext(Rs1_sd) < imm) ? 1 : 0;
@@ -1754,13 +1671,6 @@ decode QUADRANT default Unknown::unknown() {
 
         0x05: UOp::auipc({{
             Rd = rvSext(PC + (sext<20>(imm) << 12));
-
-            // [klp] {
-            xc->setAddrProvOperand(
-                this,
-                0,
-                strongAddrProv(static_cast<RegVal>(Rd)));
-            // } [klp]
         }});
 
         0x06: decode RVTYPE {
@@ -2378,25 +2288,6 @@ decode QUADRANT default Unknown::unknown() {
                     0x00: decode BS {
                         0x0: add({{
                             Rd = rvSext(Rs1_sd + Rs2_sd);
-
-                            // [klp] {
-                            const AddrProv rs1_prov =
-                                xc->getAddrProvOperand(this, 0);
-
-                            const AddrProv rs2_prov =
-                                xc->getAddrProvOperand(this, 1);
-
-                            const AddrProv dest_prov =
-                                mergeAddrAdd(
-                                    rs1_prov,
-                                    rs2_prov,
-                                    static_cast<RegVal>(Rd));
-
-                            xc->setAddrProvOperand(
-                                this,
-                                0,
-                                dest_prov);
-                            // } [klp]
                         }});
                         0x1: sub({{
                             Rd = rvSext(Rs1_sd - Rs2_sd);

@@ -126,6 +126,7 @@ class BaseCPU : public ClockedObject
   uint64_t hashingCutBits(uint64_t val1, uint64_t val2, uint64_t tag_pos );
   uint64_t hashingGF2_64to4(uint64_t val1, uint64_t val2, uint64_t startpos);
   uint64_t hashingGF2_16to4(uint64_t val1, uint64_t val2, uint64_t startpos);
+  uint64_t hashingGF2_44to4_L5(uint64_t val1, uint64_t val2, uint64_t startpos);
 
   int getParaTagWidth(){return tag_width;}
   int getParaTagPos(){return tag_pos;}

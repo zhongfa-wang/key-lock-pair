@@ -8,6 +8,7 @@ from m5.objects import (
     BaseXBar,
     Cache,
     L2XBar,
+    NULL,
     Port,
     SystemXBar,
 )
@@ -64,6 +65,10 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         l1i_assoc: int = 2,
         l2_assoc: int = 16,
         l3_assoc: int = 16,
+        l1i_prefetcher: bool = True,
+        l1d_prefetcher: bool = True,
+        l2_prefetcher: bool = True,
+        l3_prefetcher: bool = True,
         membus: Optional[BaseXBar] = None,
     ) -> None:
 
@@ -82,7 +87,25 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
 
         self._iptw_size=iptw_size
         self._dptw_size=dptw_size
+        self._l1i_prefetcher = l1i_prefetcher
+        self._l1d_prefetcher = l1d_prefetcher
+        self._l2_prefetcher = l2_prefetcher
+        self._l3_prefetcher = l3_prefetcher
         self.membus = membus if membus else self._get_default_membus()
+
+    def _apply_prefetcher_configuration(self) -> None:
+        """Disable the prefetchers selected by the hierarchy parameters."""
+        if not self._l1i_prefetcher:
+            for cache in self.l1icaches:
+                cache.prefetcher = NULL
+        if not self._l1d_prefetcher:
+            for cache in self.l1dcaches:
+                cache.prefetcher = NULL
+        if not self._l2_prefetcher:
+            for cache in self.l2caches:
+                cache.prefetcher = NULL
+        if not self._l3_prefetcher:
+            self.l3cache.prefetcher = NULL
 
     @overrides(AbstractClassicCacheHierarchy)
     def get_mem_side_port(self) -> Port:
@@ -122,6 +145,7 @@ class PrivateL1PrivateL2SharedL3CacheHierarchy(
         # self.l2cache = L2Cache(size=self._l2_size, assoc=self._l2_assoc)
         self.l3bus = L2XBar()
         self.l3cache = L3Cache(size=self._l3_size, assoc=self._l3_assoc)
+        self._apply_prefetcher_configuration()
         # ITLB Page walk caches
         self.iptw_caches = [
             MMUCache(size=self._iptw_size, writeback_clean=False)
@@ -258,6 +282,7 @@ class KLPPL1PL2SL3CacheHierarchy(PrivateL1PrivateL2SharedL3CacheHierarchy):
             size=self._l3_size,
             assoc=self._l3_assoc,
         )
+        self._apply_prefetcher_configuration()
         # ITLB Page walk caches
         self.iptw_caches = [
             KLPMMUCache(

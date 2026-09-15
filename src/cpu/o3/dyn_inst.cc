@@ -351,6 +351,96 @@ DynInst::setSquashed()
     setPinnedRegsSquashDone();
 }
 
+// [klp] {
+void
+DynInst::clearDestAddrProv()
+{
+    for (int idx = 0; idx < numDestRegs(); ++idx)
+        setAddrProvOperand(staticInst.get(), idx, noneAddrProv());
+}
+
+void
+DynInst::updateAddrProv()
+{
+    const unsigned xlen = tcBase()->getIsaPtr()->addrProvXlen();
+    AddrProv dest_prov = noneAddrProv();
+    const bool int_op = opClass() == IntAluOp ||
+                        opClass() == IntMultOp || opClass() == IntDivOp;
+    bool eligible = xlen != 0 && fault == NoFault && readPredicate() &&
+        int_op && staticInst->isInteger() && !staticInst->isMemRef() &&
+        !staticInst->isControl() && numDestRegs() == 1 &&
+        staticInst->destRegIdx(0).is(IntRegClass) && numSrcRegs() <= 2;
+
+    for (int idx = 0; eligible && idx < numSrcRegs(); ++idx) {
+        const RegId &src = staticInst->srcRegIdx(idx);
+        // RISC-V represents x0 as InvalidRegClass. It is still an operand,
+        // with value zero, and must not turn a binary operation into a copy.
+        eligible = src.is(IntRegClass) || src.is(InvalidRegClass);
+    }
+
+    if (eligible) {
+        // Renamed sources retain full-XLEN input values, even for rd == rs1
+        // or rs2. Oracle reads must not charge simulated register-file reads.
+        const auto source_value = [this](int idx) -> RegVal {
+            const PhysRegIdPtr reg = renamedSrcIdx(idx);
+            return reg->is(InvalidRegClass) ? 0 : cpu->getRegNoStats(reg);
+        };
+        switch (staticInst->getAddrProvRule()) {
+          case AddrProvRule::SeedResult:
+            dest_prov = strongAddrProv(
+                cpu->getRegNoStats(renamedDestIdx(0)));
+            break;
+          case AddrProvRule::CompareImmediate:
+            // C.LI has an implicit x0 source; C.MV has an implicit zero
+            // immediate. The decoder's immediate retains ISA extension.
+            if (numSrcRegs() <= 1) {
+                dest_prov = selectAddrProvByMagnitude(
+                    numSrcRegs() ? source_value(0) : 0,
+                    staticInst->getAddrProvImmediate(), xlen);
+            }
+            break;
+          case AddrProvRule::PreserveFirst:
+            if (numSrcRegs() >= 1) {
+                dest_prov = propagateBasePreserving(
+                    getAddrProvOperand(staticInst.get(), 0));
+            }
+            break;
+          case AddrProvRule::PreserveSelected:
+            if (numSrcRegs() == 2) {
+                dest_prov = propagateAddrProvByMagnitude(
+                    source_value(0), getAddrProvOperand(staticInst.get(), 0),
+                    source_value(1), getAddrProvOperand(staticInst.get(), 1),
+                    xlen);
+            }
+            break;
+          case AddrProvRule::Default:
+            if (numSrcRegs() == 2) {
+                dest_prov = selectAddrProvByMagnitude(
+                    source_value(0), source_value(1), xlen);
+            } else if (numSrcRegs() == 1) {
+                dest_prov = propagateBasePreserving(
+                    getAddrProvOperand(staticInst.get(), 0));
+            }
+            break;
+        }
+    }
+
+    // Replace all destination metadata on every execution, including faults,
+    // unsupported operations and replays. No old candidate may leak through.
+    clearDestAddrProv();
+    if (eligible) {
+        setAddrProvOperand(staticInst.get(), 0, dest_prov);
+        DPRINTF(KLPDEBUG,
+                "[DynInst] Integer oracle provenance. "
+                "Inst PC: %#x, SN: %llu, sources: %u, XLEN: %u, "
+                "state: %u, candidate: %#x.\n",
+                pcState().instAddr(), seqNum,
+                static_cast<unsigned>(numSrcRegs()), xlen,
+                static_cast<unsigned>(dest_prov.state), dest_prov.candidate);
+    }
+}
+// } [klp]
+
 Fault
 DynInst::execute()
 {
@@ -362,6 +452,10 @@ DynInst::execute()
     thread->noSquashFromTC = true;
 
     fault = staticInst->execute(this, traceData);
+
+    // [klp] {
+    updateAddrProv();
+    // } [klp]
 
     thread->noSquashFromTC = no_squash_from_TC;
 
@@ -378,6 +472,10 @@ DynInst::initiateAcc()
     bool no_squash_from_TC = thread->noSquashFromTC;
     thread->noSquashFromTC = true;
 
+    // [klp] {
+    // A replay must not retain an earlier load/atomic destination seed.
+    clearDestAddrProv();
+    // } [klp]
     fault = staticInst->initiateAcc(this, traceData);
 
     thread->noSquashFromTC = no_squash_from_TC;

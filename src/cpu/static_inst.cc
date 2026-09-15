@@ -195,9 +195,9 @@ StaticInst::genSecTag(ExecContext *xc) const
 
     /*
      * credential 必须来自 AddrProv::candidate，不能重新读取
-     * Rs1 的实际值。特别是 STRONG + WEAK 的 ADD 传播中，
-     * candidate 是 strong source 的 base candidate，而不一定
-     * 等于最终 Rs1/rd 的值。
+     * Rs1 的实际值。candidate 是最近双整数源运算选中的原始
+     * operand，或 load 返回的指针值；单整数源运算原样传递它，
+     * 因而它不一定等于最终 Rs1/rd 的值。
      */
     const RegVal credential = decision.credential;
 

@@ -95,8 +95,8 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
       // [klp] {
       cache_level(p.cache_level), tag_width(p.tag_width),
       tag_pos(p.tag_pos), tag_granularity(p.tag_granularity),
-      tagBitMask(p.system->initWidthMask(p.tag_width, p.tag_pos)),
-      // tagBitMask(p.system->initWidthMask(p.tag_width)), // Mask used in GF2
+      // CPU hashes return low-bit tags; exclude the MSB validity marker.
+      tagBitMask(p.system->initWidthMask(p.tag_width)),
       // } [klp]
       cpuSidePort (p.name + ".cpu_side_port", *this, "CpuSidePort"),
       memSidePort(p.name + ".mem_side_port", this, "MemSidePort"),

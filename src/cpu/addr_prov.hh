@@ -2,12 +2,23 @@
 #ifndef __CPU_ADDR_PROV_HH__
 #define __CPU_ADDR_PROV_HH__
 
+#include <cassert>
 #include <cstdint>
 
 #include "base/types.hh"
 
 namespace gem5
 {
+
+// ISA decoders annotate special cases; Default retains ordinary two-source
+// arithmetic and one-source propagation for otherwise eligible instructions.
+enum class AddrProvRule : uint8_t {
+    Default,
+    CompareImmediate,
+    PreserveFirst,
+    PreserveSelected,
+    SeedResult
+};
 
 struct AddrProv
 {
@@ -65,132 +76,72 @@ ambiguousAddrProv()
 }
 
 /*
- * Propagate provenance through an explicitly base-preserving operation,
- * for example:
- *
- *     addi rd, rs1, imm
- *     c.addi
- *     c.mv
- *
- * STRONG and WEAK preserve their state.
- *
- * AMBIGUOUS remains AMBIGUOUS.
- * NONE remains NONE.
+ * Logic and shifts carry the selected provenance unchanged, even when they
+ * change the architectural value. They never create a candidate or resolve
+ * ambiguity.
  */
 [[nodiscard]] inline constexpr AddrProv
-propagateBasePreserving(const AddrProv &src, RegVal dest_value)
+propagateBasePreserving(const AddrProv &src)
 {
     switch (src.state) {
       case AddrProv::State::NONE:
         return noneAddrProv();
-
       case AddrProv::State::WEAK:
-        return weakAddrProv(dest_value);
-
+        return weakAddrProv(src.candidate);
       case AddrProv::State::STRONG:
-        return strongAddrProv(dest_value);
-
+        return strongAddrProv(src.candidate);
       case AddrProv::State::AMBIGUOUS:
         return ambiguousAddrProv();
     }
-
-    // Defensive fallback for a corrupted/invalid enum value.
     return ambiguousAddrProv();
 }
 
 /*
- * Merge the provenance of:
- *
- *     add rd, rs1, rs2
- *
- * dest_value must be the actual runtime value written to rd.
+ * Interpret the low XLEN bits as a signed integer, but compute its magnitude
+ * using unsigned arithmetic so that abs(INT_MIN) is representable as well.
+ * Word operations still use the full XLEN, not their 32-bit arithmetic width.
  */
-[[nodiscard]] inline constexpr AddrProv
-mergeAddrAdd(
-    const AddrProv &lhs,
-    const AddrProv &rhs,
-    RegVal dest_value)
+[[nodiscard]] inline constexpr RegVal
+addrProvMagnitude(RegVal value, unsigned xlen)
 {
-    using State = AddrProv::State;
-
-    /*
-     * Ambiguity is sticky through the dependency chain.
-     */
-    if (lhs.state == State::AMBIGUOUS ||
-        rhs.state == State::AMBIGUOUS) {
-        return ambiguousAddrProv();
-    }
-
-    /*
-     * NONE + NONE -> NONE
-     */
-    if (lhs.state == State::NONE &&
-        rhs.state == State::NONE) {
-        return noneAddrProv();
-    }
-
-    /*
-     * NONE + STRONG/WEAK
-     *
-     * Only one operand has address provenance. The ADD result remains
-     * based on that operand, and the new candidate is the actual rd value.
-     */
-    if (lhs.state == State::NONE) {
-        if (rhs.state == State::STRONG)
-            return strongAddrProv(dest_value);
-
-        if (rhs.state == State::WEAK)
-            return weakAddrProv(dest_value);
-
-        return noneAddrProv();
-    }
-
-    /*
-     * STRONG/WEAK + NONE
-     */
-    if (rhs.state == State::NONE) {
-        if (lhs.state == State::STRONG)
-            return strongAddrProv(dest_value);
-
-        if (lhs.state == State::WEAK)
-            return weakAddrProv(dest_value);
-
-        return noneAddrProv();
-    }
-
-    /*
-     * STRONG + WEAK
-     *
-     * The weak operand is treated as a dynamic address component.
-     * Preserve the candidate of the strong source instead of using
-     * the full ADD result.
-     */
-    if (lhs.state == State::STRONG &&
-        rhs.state == State::WEAK) {
-        return strongAddrProv(lhs.candidate);
-    }
-
-    /*
-     * WEAK + STRONG
-     */
-    if (lhs.state == State::WEAK &&
-        rhs.state == State::STRONG) {
-        return strongAddrProv(rhs.candidate);
-    }
-
-    /*
-     * Remaining combinations:
-     *
-     *     WEAK   + WEAK
-     *     STRONG + STRONG
-     *
-     * There are two candidates and this version does not perform
-     * branch-based or value-based disambiguation.
-     */
-    return ambiguousAddrProv();
+    assert(xlen == 32 || xlen == 64);
+    const RegVal mask = xlen == 32 ? 0xffffffffULL : ~RegVal{0};
+    const RegVal sign = RegVal{1} << (xlen - 1);
+    value &= mask;
+    return (value & sign) ? (RegVal{0} - value) & mask : value;
 }
 
-// [KLPFIXME] doesn't support sub for now
+/*
+ * Each arithmetic operation selects a fresh candidate from its actual
+ * inputs. Incoming provenance is deliberately irrelevant: the most recent
+ * operation replaces even an AMBIGUOUS candidate. Equal magnitudes cannot
+ * distinguish a base from an offset and therefore prohibit key generation.
+ * Preserve the raw register/immediate value, not its magnitude or the result.
+ */
+[[nodiscard]] inline constexpr AddrProv
+selectAddrProvByMagnitude(RegVal lhs, RegVal rhs, unsigned xlen)
+{
+    const RegVal lhs_magnitude = addrProvMagnitude(lhs, xlen);
+    const RegVal rhs_magnitude = addrProvMagnitude(rhs, xlen);
+    if (lhs_magnitude == rhs_magnitude)
+        return ambiguousAddrProv();
+    return strongAddrProv(lhs_magnitude > rhs_magnitude ? lhs : rhs);
+}
+
+// Register logic selects a source by current operand values, then copies
+// that source's candidate AND state, including NONE and AMBIGUOUS.
+[[nodiscard]] inline constexpr AddrProv
+propagateAddrProvByMagnitude(RegVal lhs, const AddrProv &lhs_prov,
+                            RegVal rhs, const AddrProv &rhs_prov,
+                            unsigned xlen)
+{
+    const RegVal lhs_magnitude = addrProvMagnitude(lhs, xlen);
+    const RegVal rhs_magnitude = addrProvMagnitude(rhs, xlen);
+    if (lhs_magnitude == rhs_magnitude)
+        return ambiguousAddrProv();
+    return propagateBasePreserving(
+        lhs_magnitude > rhs_magnitude ? lhs_prov : rhs_prov);
+}
 
 /*
  * Result of extracting a credential for a load.

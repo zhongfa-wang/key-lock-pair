@@ -53,6 +53,7 @@
 #include "arch/generic/pcstate.hh"
 #include "base/logging.hh"
 #include "base/refcnt.hh"
+#include "cpu/addr_prov.hh"
 #include "cpu/op_class.hh"
 #include "cpu/reg_class.hh"
 #include "cpu/static_inst_fwd.hh"
@@ -99,6 +100,8 @@ class StaticInst : public RefCounted, public StaticInstFlags
     RegIdArrayPtr _destRegIdxPtr = nullptr;
 
   protected:
+
+    AddrProvRule addrProvRule = AddrProvRule::Default;
 
     /// Flag values for this instruction.
     std::bitset<Num_Flags> flags;
@@ -296,6 +299,10 @@ class StaticInst : public RefCounted, public StaticInstFlags
             trace::InstRecord *traceData) const = 0;
             
     // [klp] {
+    AddrProvRule getAddrProvRule() const { return addrProvRule; }
+    // Register move aliases compare their source against an implicit zero.
+    virtual RegVal getAddrProvImmediate() const { return 0; }
+
     // Generate security tag return a uint32_t value
     uint64_t genSecTag(ExecContext *xc) const;
     bool isKlpLoad() const {return flags[IsKlpLoad];}

@@ -122,9 +122,8 @@ class CPU : public BaseCPU
     /**
     * Reinitialize provenance after a direct architectural-register write.
     *
-    * Integer registers are first cleared to NONE. Registers selected by the
-    * ISA policy are then initialized as STRONG using their current physical
-    * register value.
+    * Integer registers are cleared to NONE. Register identity and direct
+    * architectural writes cannot seed the value-comparison oracle.
     */
     void
     resetArchAddrProv(

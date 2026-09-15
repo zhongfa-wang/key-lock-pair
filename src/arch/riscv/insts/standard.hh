@@ -62,6 +62,12 @@ class RegOp : public RiscvStaticInst
 template<typename I>
 class ImmOp : public RiscvStaticInst
 {
+  public:
+    RegVal getAddrProvImmediate() const override
+    {
+        return static_cast<RegVal>(imm);
+    }
+
   protected:
     I imm;
 

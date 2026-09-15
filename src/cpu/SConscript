@@ -80,6 +80,8 @@ CompoundFlag('Exec', [ 'ExecEnable', 'ExecOpClass', 'ExecThread',
     'ExecFaulting', 'ExecUser', 'ExecKernel' ])
 CompoundFlag('ExecNoTicks', [ 'Exec', 'FmtTicksOff' ])
 
+GTest('addr_prov.test', 'addr_prov.test.cc')
+
 Source('func_unit.cc')
 Source('pc_event.cc')
 

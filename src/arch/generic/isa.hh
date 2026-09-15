@@ -94,18 +94,8 @@ class BaseISA : public SimObject
     const std::string &getIsaName() const { return isaName; }
 
     // [klp] {
-    /**
-    * Return whether an architectural register should be initialized as a
-    * STRONG address-provenance seed.
-    *
-    * The default implementation returns false so that non-RISC-V ISAs are
-    * unaffected.
-    */
-    virtual bool
-    isAddrProvStrongSeed(const RegId &reg) const
-    {
-        return false;
-    }
+    /** Integer width for the value-comparison oracle; zero disables it. */
+    virtual unsigned addrProvXlen() const { return 0; }
     // } [klp]
     // Locked memory handling functions.
     virtual void handleLockedRead(const RequestPtr &req) {}

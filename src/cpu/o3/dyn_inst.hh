@@ -143,6 +143,11 @@ class DynInst : public ExecContext, public RefCounted
     trace::InstRecord *traceData = nullptr;
 
   protected:
+    // [klp] {
+    void clearDestAddrProv();
+    void updateAddrProv();
+    // } [klp]
+
     enum Status
     {
         IqEntry,                 /// Instruction is in the IQ
