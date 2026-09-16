@@ -96,6 +96,8 @@ class BaseISA : public SimObject
     // [klp] {
     /** Integer width for the value-comparison oracle; zero disables it. */
     virtual unsigned addrProvXlen() const { return 0; }
+    /** Architectural address roots; other ISAs do not seed registers. */
+    virtual bool isAddrProvStrongSeed(const RegId &) const { return false; }
     // } [klp]
     // Locked memory handling functions.
     virtual void handleLockedRead(const RequestPtr &req) {}

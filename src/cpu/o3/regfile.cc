@@ -180,9 +180,9 @@ PhysRegFile::setAddrProv(
     assert(idx < intAddrProv.size());
 
     /*
-      * Normalize the metadata here so that NONE and AMBIGUOUS can
-      * never retain a stale candidate.
-      */
+     * NONE has no candidate. AMBIGUOUS carries a magnitude/candidate
+     * through propagation while remaining ineligible for key generation.
+     */
     switch (prov.state) {
       case AddrProv::State::NONE:
         intAddrProv[idx] = noneAddrProv();
@@ -197,7 +197,7 @@ PhysRegFile::setAddrProv(
         return;
 
       case AddrProv::State::AMBIGUOUS:
-        intAddrProv[idx] = ambiguousAddrProv();
+        intAddrProv[idx] = ambiguousAddrProv(prov.candidate);
         return;
     }
 
@@ -205,7 +205,7 @@ PhysRegFile::setAddrProv(
       * Defensive fallback in case an invalid enum value is supplied.
       * Treat it conservatively as ambiguous.
       */
-    intAddrProv[idx] = ambiguousAddrProv();
+    intAddrProv[idx] = ambiguousAddrProv(0);
 }
 
 void

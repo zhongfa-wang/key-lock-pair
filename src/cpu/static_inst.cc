@@ -172,10 +172,11 @@ StaticInst::genSecTag(ExecContext *xc) const
 
         DPRINTF(KLPDEBUG,
                 "[StaticInst] Credential unavailable. "
-                "Inst PC: %#lx, inst: %s, provenance state: %u.\n",
+                "Inst PC: %#lx, inst: %s, provenance state: %u, "
+                "candidate: %#x.\n",
                 inst->pcState().instAddr(),
                 disassemble(inst->pcState().instAddr(), 0),
-                static_cast<unsigned>(prov.state));
+                static_cast<unsigned>(prov.state), prov.candidate);
 
         /*
          * 0 只表示 packet 没有合法 security tag。
@@ -193,8 +194,8 @@ StaticInst::genSecTag(ExecContext *xc) const
 
     /*
      * credential 必须来自 AddrProv::candidate，不能重新读取
-     * Rs1 的实际值。candidate 是最近双整数源运算选中的原始
-     * operand，或 load 返回的指针值；单整数源运算原样传递它，
+     * Rs1 的实际值。candidate 来自 ISA/load seed，或最近一次
+     * 数值比较选中的原始 operand；单源运算和语义传播保留它，
      * 因而它不一定等于最终 Rs1/rd 的值。
      */
     const RegVal credential = decision.credential;

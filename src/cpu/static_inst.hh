@@ -300,8 +300,6 @@ class StaticInst : public RefCounted, public StaticInstFlags
             
     // [klp] {
     AddrProvRule getAddrProvRule() const { return addrProvRule; }
-    // Register move aliases compare their source against an implicit zero.
-    virtual RegVal getAddrProvImmediate() const { return 0; }
 
     // Generate security tag return a uint32_t value
     uint64_t genSecTag(ExecContext *xc) const;

@@ -1024,11 +1024,31 @@ CPU::resetArchAddrProv(
 
     regFile.clearAddrProv(phys_reg);
 
+    const bool is_strong_seed =
+        isa[tid]->isAddrProvStrongSeed(flat_reg);
+
+    if (is_strong_seed) {
+        const RegVal value = regFile.getReg(phys_reg);
+
+        regFile.setAddrProv(
+            phys_reg,
+            strongAddrProv(value));
+    }
+
 #ifndef NDEBUG
-    // Direct writes and CPU takeover do not identify a dynamic base operand.
+    /*
+     * Postcondition: every direct architectural integer write must
+     * completely replace the previous provenance.
+     */
     const AddrProv &prov = regFile.getAddrProv(phys_reg);
-    assert(prov.state == AddrProv::State::NONE);
-    assert(prov.candidate == 0);
+
+    if (is_strong_seed) {
+        assert(prov.state == AddrProv::State::STRONG);
+        assert(prov.candidate == regFile.getReg(phys_reg));
+    } else {
+        assert(prov.state == AddrProv::State::NONE);
+        assert(prov.candidate == 0);
+    }
 #endif
 }
 // } [klp]

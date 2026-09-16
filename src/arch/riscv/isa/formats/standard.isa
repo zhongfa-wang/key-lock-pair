@@ -449,13 +449,17 @@ def template CSRExecute {{
 
 let {{
     def annotateAddrProv(iop, name):
-        # Only actual arithmetic immediates are comparison operands. Other
-        # I-format encodings can contain opcode fields instead of data.
-        if name in ('addi', 'addiw', 'slti', 'sltiu', 'c_addi', 'c_addiw',
-                    'c_addi16sp', 'c_addi4spn', 'c_li', 'c_mv'):
-            rule = 'CompareImmediate'
-        elif name in ('lui', 'auipc', 'c_lui'):
-            rule = 'SeedResult'
+        # Constants retain the original ISA seeds. Other single-source
+        # operations preserve provenance through the Default rule.
+        if name in ('addi', 'addiw'):
+            rule = 'SeedConstantOrPreserve'
+        elif name == 'auipc':
+            rule = 'SeedStrongResult'
+        elif name in ('lui', 'c_lui', 'c_li'):
+            rule = 'SeedWeakResult'
+        elif name in ('sh1add', 'sh2add', 'sh3add', 'sh1add_uw',
+                      'sh2add_uw', 'sh3add_uw', 'add_uw'):
+            rule = 'ScaledIndexBase'
         elif name in ('and', 'or', 'xor', 'c_and', 'c_or', 'c_xor'):
             rule = 'PreserveSelected'
         elif name in ('andi', 'ori', 'ori_hint', 'xori', 'c_andi',

@@ -144,6 +144,7 @@ class ISA : public BaseISA
 
     // [klp] {
     unsigned addrProvXlen() const override { return _rvType == RV32 ? 32 : 64; }
+    bool isAddrProvStrongSeed(const RegId &reg) const override;
     // } [klp]
     // Derived class could provide knowledge of non-standard CSRs to other
     // components by overriding the two getCSRxxxMap here and properly

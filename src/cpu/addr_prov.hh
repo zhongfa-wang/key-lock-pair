@@ -14,10 +14,12 @@ namespace gem5
 // arithmetic and one-source propagation for otherwise eligible instructions.
 enum class AddrProvRule : uint8_t {
     Default,
-    CompareImmediate,
+    SeedConstantOrPreserve,
     PreserveFirst,
     PreserveSelected,
-    SeedResult
+    SeedStrongResult,
+    SeedWeakResult,
+    ScaledIndexBase
 };
 
 struct AddrProv
@@ -36,8 +38,8 @@ struct AddrProv
 /*
  * Canonical AddrProv constructors.
  *
- * NONE and AMBIGUOUS do not carry a usable credential, so their
- * candidate is always cleared to zero.
+ * NONE clears its candidate. AMBIGUOUS retains diagnostic provenance,
+ * but its candidate must never authorize a speculative load.
  */
 [[nodiscard]] inline constexpr AddrProv
 noneAddrProv()
@@ -67,11 +69,11 @@ strongAddrProv(RegVal candidate)
 }
 
 [[nodiscard]] inline constexpr AddrProv
-ambiguousAddrProv()
+ambiguousAddrProv(RegVal candidate)
 {
     return {
         AddrProv::State::AMBIGUOUS,
-        0
+        candidate
     };
 }
 
@@ -91,9 +93,9 @@ propagateBasePreserving(const AddrProv &src)
       case AddrProv::State::STRONG:
         return strongAddrProv(src.candidate);
       case AddrProv::State::AMBIGUOUS:
-        return ambiguousAddrProv();
+        return ambiguousAddrProv(src.candidate);
     }
-    return ambiguousAddrProv();
+    return ambiguousAddrProv(0);
 }
 
 /*
@@ -116,7 +118,7 @@ addrProvMagnitude(RegVal value, unsigned xlen)
  * inputs. Incoming provenance is deliberately irrelevant: the most recent
  * operation replaces even an AMBIGUOUS candidate. Equal magnitudes cannot
  * distinguish a base from an offset and therefore prohibit key generation.
- * Preserve the raw register/immediate value, not its magnitude or the result.
+ * Preserve the winning raw register value. Ties retain their common magnitude.
  */
 [[nodiscard]] inline constexpr AddrProv
 selectAddrProvByMagnitude(RegVal lhs, RegVal rhs, unsigned xlen)
@@ -124,7 +126,7 @@ selectAddrProvByMagnitude(RegVal lhs, RegVal rhs, unsigned xlen)
     const RegVal lhs_magnitude = addrProvMagnitude(lhs, xlen);
     const RegVal rhs_magnitude = addrProvMagnitude(rhs, xlen);
     if (lhs_magnitude == rhs_magnitude)
-        return ambiguousAddrProv();
+        return ambiguousAddrProv(lhs_magnitude);
     return strongAddrProv(lhs_magnitude > rhs_magnitude ? lhs : rhs);
 }
 
@@ -138,9 +140,29 @@ propagateAddrProvByMagnitude(RegVal lhs, const AddrProv &lhs_prov,
     const RegVal lhs_magnitude = addrProvMagnitude(lhs, xlen);
     const RegVal rhs_magnitude = addrProvMagnitude(rhs, xlen);
     if (lhs_magnitude == rhs_magnitude)
-        return ambiguousAddrProv();
+        return ambiguousAddrProv(lhs_magnitude);
     return propagateBasePreserving(
         lhs_magnitude > rhs_magnitude ? lhs_prov : rhs_prov);
+}
+
+/*
+ * SH1/2/3ADD, their .uw forms, and ADD.UW have an explicit unscaled
+ * base in source 1. Retain the original semantic merge policy rather than
+ * comparing magnitudes. A newly ambiguous result records abs(actual base),
+ * including when ambiguity is inherited from either input.
+ */
+[[nodiscard]] inline constexpr AddrProv
+mergeAddrScaledIndexBase(const AddrProv &index, const AddrProv &base,
+                         RegVal base_value, unsigned xlen)
+{
+    using State = AddrProv::State;
+    if (index.state == State::AMBIGUOUS || base.state == State::AMBIGUOUS)
+        return ambiguousAddrProv(addrProvMagnitude(base_value, xlen));
+    if (index.state == State::NONE)
+        return propagateBasePreserving(base);
+    if (index.state == State::WEAK && base.state == State::STRONG)
+        return propagateBasePreserving(base);
+    return ambiguousAddrProv(addrProvMagnitude(base_value, xlen));
 }
 
 /*

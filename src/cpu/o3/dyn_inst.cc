@@ -386,17 +386,30 @@ DynInst::updateAddrProv()
             return reg->is(InvalidRegClass) ? 0 : cpu->getRegNoStats(reg);
         };
         switch (staticInst->getAddrProvRule()) {
-          case AddrProvRule::SeedResult:
+          case AddrProvRule::SeedStrongResult:
             dest_prov = strongAddrProv(
                 cpu->getRegNoStats(renamedDestIdx(0)));
             break;
-          case AddrProvRule::CompareImmediate:
-            // C.LI has an implicit x0 source; C.MV has an implicit zero
-            // immediate. The decoder's immediate retains ISA extension.
-            if (numSrcRegs() <= 1) {
-                dest_prov = selectAddrProvByMagnitude(
-                    numSrcRegs() ? source_value(0) : 0,
-                    staticInst->getAddrProvImmediate(), xlen);
+          case AddrProvRule::SeedWeakResult:
+            dest_prov = weakAddrProv(
+                cpu->getRegNoStats(renamedDestIdx(0)));
+            break;
+          case AddrProvRule::SeedConstantOrPreserve:
+            // ADDI/ADDIW with x0 materialize a constant. Otherwise they
+            // retain the source candidate, even for word truncation.
+            if (numSrcRegs() == 1) {
+                dest_prov = staticInst->srcRegIdx(0).is(InvalidRegClass) ?
+                    weakAddrProv(cpu->getRegNoStats(renamedDestIdx(0))) :
+                    propagateBasePreserving(
+                        getAddrProvOperand(staticInst.get(), 0));
+            }
+            break;
+          case AddrProvRule::ScaledIndexBase:
+            if (numSrcRegs() == 2) {
+                dest_prov = mergeAddrScaledIndexBase(
+                    getAddrProvOperand(staticInst.get(), 0),
+                    getAddrProvOperand(staticInst.get(), 1),
+                    source_value(1), xlen);
             }
             break;
           case AddrProvRule::PreserveFirst:
