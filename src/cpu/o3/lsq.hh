@@ -319,6 +319,9 @@ class LSQ
         /** Install the request in the LQ/SQ. */
         void install();
 
+        /** Build a read packet after translation, including KLP metadata. */
+        PacketPtr createReadPacket(const RequestPtr &req);
+
         bool squashed() const override;
 
 

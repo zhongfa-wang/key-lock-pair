@@ -1022,6 +1022,10 @@ LSQ::SplitDataRequest::initiateTranslation()
                 _size, _flags, _inst->requestorId(),
                 _inst->pcState().instAddr(), _inst->contextId());
     _mainReq->setByteEnable(_byteEnable);
+    // The assembled KLP packet carries the same instruction metadata as
+    // its fragments, including the sequence number used by packet tracing.
+    _mainReq->setReqInstSeqNum(_inst->seqNum);
+    _mainReq->taskId(_taskId);
 
     // Paddr is not used in _mainReq. However, we will accumulate the flags
     // from the sub requests into _mainReq by calling setFlags() in finish().
@@ -1245,21 +1249,21 @@ LSQ::SplitDataRequest::recvTimingResp(PacketPtr pkt)
         pktIdx++;
     assert(pktIdx < _packets.size());
     numReceivedPackets++;
-    // [klp] {
-    if(pkt->getPassSecTagVeri() == gem5::triStateVal::FALSE){
-      mainPktPassTagVeriState = gem5::triStateVal::FALSE;
-    }  
-    // } [klp]
+    if (pkt->isKlpRead) {
+        panic_if(pkt->getPassSecTagVeri() == gem5::triStateVal::INIT,
+                 "KLP fragment returned without a verification result");
+        if (!pkt->passSecTagVeri())
+            mainPktPassTagVeriState = gem5::triStateVal::FALSE;
+    }
     if (numReceivedPackets == _packets.size()) {
         flags.set(Flag::Complete);
         /* Assemble packets. */
-        PacketPtr resp = isLoad()
-        // [klp] {
-            ? Packet::createRead(_mainReq, mainPktPassTagVeriState)
-            /* Only make read pkts carry the sec tags. */
-            // : Packet::createWrite(_mainReq, mainPktPassTagVeriState);
-            : Packet::createWrite(_mainReq);
-        // } [klp]
+        PacketPtr resp = isLoad() ? createReadPacket(_mainReq)
+                                 : Packet::createWrite(_mainReq);
+        if (resp->isKlpRead) {
+            resp->setPassSecTagVeri(mainPktPassTagVeriState);
+            _mainPacket->setPassSecTagVeri(mainPktPassTagVeriState);
+        }
         if (isLoad())
             resp->dataStatic(_inst->memData);
         else
@@ -1272,6 +1276,26 @@ LSQ::SplitDataRequest::recvTimingResp(PacketPtr pkt)
     return true;
 }
 
+PacketPtr
+LSQ::LSQRequest::createReadPacket(const RequestPtr &req)
+{
+    // Split requests merge the translation flags into mainReq(). Bypass
+    // the entire access if any fragment requires uncached/ordered handling.
+    // LSQUnit::read still enforces the existing at-commit ordering rules.
+    const bool klp_read = _inst->isKlpLoad() &&
+        !mainReq()->isUncacheable() && !mainReq()->isStrictlyOrdered();
+    PacketPtr pkt;
+    if (klp_read) {
+        assert(unCondiState == _inst->getUncondiState());
+        pkt = Packet::createRead(req, unCondiState,
+            _inst->getSecTagInDynInst(), _inst->getIsBaseUnknown());
+    } else {
+        pkt = Packet::createRead(req);
+    }
+    pkt->isKlpRead = klp_read;
+    return pkt;
+}
+
 void
 LSQ::SingleDataRequest::buildPackets()
 {
@@ -1281,9 +1305,7 @@ LSQ::SingleDataRequest::buildPackets()
         assert(this->unCondiState == instruction()->getUncondiState());
         _packets.push_back(
                 isLoad()
-                    ?  (instruction()->isKlpLoad()?
-                        Packet::createRead(req(), this->unCondiState, instruction()->getSecTagInDynInst(), instruction()->getIsBaseUnknown()):
-                        Packet::createRead(req()))
+                    ? createReadPacket(req())
                     /* Only make read pkts carry the sec tags. */
                     // :  Packet::createWrite(req(), instruction()->getUncondiState(), secTagRegVal));
                     :  Packet::createWrite(req()));
@@ -1294,8 +1316,6 @@ LSQ::SingleDataRequest::buildPackets()
                 instruction()->getSecTagInDynInst(), 
                 isUnConditional()? "True" : "False",
                 req()->getVaddr());
-        /* Transfer inst's isKlpLoad state to the packet. */
-        _packets.back()->isKlpRead = instruction()->isKlpLoad();
         // } [klp]
         _packets.back()->dataStatic(_inst->memData);
         _packets.back()->senderState = this;
@@ -1329,7 +1349,7 @@ LSQ::SplitDataRequest::buildPackets()
     if (_packets.size() == 0) {
         /* New stuff */
         if (isLoad()) {
-            _mainPacket = Packet::createRead(_mainReq);
+            _mainPacket = createReadPacket(_mainReq);
             _mainPacket->dataStatic(_inst->memData);
 
             // hardware transactional memory
@@ -1351,14 +1371,10 @@ LSQ::SplitDataRequest::buildPackets()
             RequestPtr req = _reqs[i];
             // [klp]
             assert(this->unCondiState == instruction()->getUncondiState());
-            PacketPtr pkt = isLoad() ? (instruction()->isKlpLoad()?
-                                        Packet::createRead(req, this->unCondiState, instruction()->getSecTagInDynInst(), instruction()->getIsBaseUnknown()):
-                                        Packet::createRead(req))
+            PacketPtr pkt = isLoad() ? createReadPacket(req)
                                      : Packet::createWrite(req);
             /* DPRINTF(KLPDEBUG, "[LSQ] LSQ building a split sub req. SecTagVal: 0x%x, sub pkt obj addr: 0x%x.\n",
                             instruction()->getSecTagInDynInst(), pkt); */
-                            /* Transfer inst's isKlpLoad state to the packet. */
-            pkt->isKlpRead = instruction()->isKlpLoad();
             // } [klp]
             ptrdiff_t offset = req->getVaddr() - base_address;
             if (isLoad()) {

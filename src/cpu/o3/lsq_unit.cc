@@ -101,28 +101,6 @@ LSQUnit::recvTimingResp(PacketPtr pkt)
 {
     LSQRequest *request = dynamic_cast<LSQRequest*>(pkt->senderState);
     assert(request != nullptr);
-    // [klp] {
-    DynInstPtr inst = request->instruction();
-    if(inst->getUncondiState() == gem5::triStateVal::FALSE &&
-       inst->isKlpLoad() &&
-       inst->specReqTagVeriResult == gem5::triStateVal::INIT){
-        // assert(pkt->getPassSecTagVeri()!=gem5::triStateVal::INIT);
-        if (pkt->getPassSecTagVeri() == gem5::triStateVal::INIT) {
-        panic("Packet Response with INIT Tag!\n"
-              "  - PC: %s\n"
-              "  - Is Load? %d\n"
-              "  - Command: %s\n"
-              "  - Addr: %#lx\n"
-              "  - Is Uncacheable? %d\n",
-              inst->pcState(),
-              inst->isLoad(),
-              pkt->cmdString(),
-              pkt->getAddr(),
-              pkt->req->isUncacheable());
-    }
-        inst->specReqTagVeriResult = pkt->getPassSecTagVeri();
-       }
-    // } [klp]
     bool ret = true;
     /* Check that the request is still alive before any further action. */
     if (!request->isReleased()) {
@@ -137,7 +115,18 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
     LSQRequest *request = dynamic_cast<LSQRequest *>(pkt->senderState);
     DynInstPtr inst = request->instruction();
     // [klp] {
-    if(!request->isUnConditional() && inst->isKlpLoad()){
+    if (pkt->isKlpRead) {
+        assert(inst->isKlpLoad());
+        assert(pkt->isUnCondiReExe() == request->isUnConditional());
+        panic_if(pkt->getPassSecTagVeri() == gem5::triStateVal::INIT,
+                 "KLP load PC %s returned without a verification result",
+                 inst->pcState());
+    }
+    if (!request->isUnConditional() && pkt->isKlpRead) {
+      // Record one result per completed request, after all split fragments
+      // have been aggregated. Released requests never reach this point.
+      assert(inst->specReqTagVeriResult == gem5::triStateVal::INIT);
+      inst->specReqTagVeriResult = pkt->getPassSecTagVeri();
       inst->isSpecRespRecvd = true;
       DPRINTF(KLPDEBUG, "[LSQUnit] Klp resp pkt received. Pass tag veri: %s, inst VA: 0x%x, inst SN:%llu, inst assembly: %s, inst uncondi state: %s, "
                         "target addr: 0x%x, size: %llu, has data: %s.\n",
@@ -208,14 +197,14 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
 
     // [klp] {
     /* klp stats */
-    if(inst->isKlpLoad() && pkt->isUnCondiReExe()){
+    if (pkt->isKlpRead && request->isUnConditional()) {
       assert(pkt->passSecTagVeri());
       assert(!inst->statsUpdated[6]);
       inst->statsUpdated[6] = true;
       inst->stallCycEnd = cpu->curCycle();
     }
 
-    if (inst->isKlpLoad() && !pkt->isUnCondiReExe()) {
+    if (pkt->isKlpRead && !request->isUnConditional()) {
       inst->setPassTagVeriDynInstCarrier(pkt->getPassSecTagVeri());
       if (!pkt->passSecTagVeri()){
         /* klp stats */

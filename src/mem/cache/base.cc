@@ -97,6 +97,7 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
       tag_pos(p.tag_pos), tag_granularity(p.tag_granularity),
       // CPU hashes return low-bit tags; exclude the MSB validity marker.
       tagBitMask(p.system->initWidthMask(p.tag_width)),
+      klpEnabled(p.threat_model != "disable"),
       // } [klp]
       cpuSidePort (p.name + ".cpu_side_port", *this, "CpuSidePort"),
       memSidePort(p.name + ".mem_side_port", this, "MemSidePort"),
@@ -164,6 +165,14 @@ BaseCache::~BaseCache()
     delete tempBlock;
 }
 // [klp] {
+bool
+BaseCache::isKlpRequest(const PacketPtr pkt) const
+{
+    return pkt && klpEnabled && cache_level == enums::CacheLevel::L1D &&
+        pkt->isKlpRead && !pkt->req->isUncacheable() &&
+        !pkt->req->isStrictlyOrdered();
+}
+
 triStateVal
 BaseCache::verifySecTagInCache(const PacketPtr pkt)
 
@@ -501,12 +510,13 @@ BaseCache::recvTimingReq(PacketPtr pkt)
     // [klp] {
     /* The pkt of an uncondi request is always be marked as tag verification
     passed.*/
-      if(cache_level == enums::CacheLevel::L1D && pkt->isUnCondiReExe())
+      if (cache_level == enums::CacheLevel::L1D && pkt->isKlpRead &&
+          (pkt->isUnCondiReExe() || !isKlpRequest(pkt)))
         pkt->setPassSecTagVeri(gem5::triStateVal::TRUE);
     /* If it's a request from speculative load, there will always be a sec tag
     verification. */
     // if(cache_level == enums::CacheLevel::L1D && !pkt->isUnCondiReExe() && pkt->isKlpRead){
-    if(cache_level == enums::CacheLevel::L1D){
+    if (klpEnabled && cache_level == enums::CacheLevel::L1D) {
       stats.tagVeriNum++;
       if (pkt->isWrite()) {
         stats.WriteNum++;
@@ -1292,8 +1302,8 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
         // Both demand hits and MSHR completions reach this path. Install
         // permission only for an unconditional KLP load, never a prefetch.
         // Temporary fill blocks are not resident in the tag store.
-        if (cache_level == enums::CacheLevel::L1D &&
-            pkt->isKlpRead && pkt->isUnCondiReExe() && blk != tempBlock) {
+        if (isKlpRequest(pkt) && pkt->isUnCondiReExe() &&
+            !pkt->isBaseUnknown() && blk != tempBlock) {
             tags->setSecTagInCache(pkt, tag_granularity, pkt->getSecTag());
         }
     } else if (pkt->isUpgrade()) {
@@ -1611,7 +1621,7 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
             // [klp] {
             /* The current implementation protects only L1D. */
             /* This is on the path of a read hits L1D.*/
-            if(cache_level == enums::CacheLevel::L1D && pkt->isKlpRead){
+            if (isKlpRequest(pkt)) {
               /* If the packet is made by a speculative load, perform tag verification.*/
               if(!pkt->isUnCondiReExe()){
                 

@@ -132,6 +132,7 @@ class BaseCPU : public ClockedObject
   int getParaTagPos(){return tag_pos;}
   int getParaTagGranularity(){return tag_granularity;}
   std::string getParaThreatModel(){return threat_model;}
+  bool isKlpEnabled() const { return threat_model != "disable"; }
   std::string getParaTagGenSrc(){return tag_gen_src;}
   uint64_t getWidthMask(){return tagBitMask;}
   // } [klp]

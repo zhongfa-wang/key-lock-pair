@@ -119,6 +119,10 @@ class BaseCache : public ClockedObject
     // Parameter that determines the granularity of the memory tag.
     const uint64_t tag_granularity;
     uint64_t tagBitMask;
+    const bool klpEnabled;
+
+    /** Whether this packet is subject to L1D KLP permission checks. */
+    bool isKlpRequest(const PacketPtr pkt) const;
     // } [klp]
 
     /**

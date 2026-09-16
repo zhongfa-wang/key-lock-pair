@@ -391,8 +391,10 @@ class DynInst : public ExecContext, public RefCounted
     void setUncondiState(triStateVal flagVal) {unCondiStateInst = flagVal;}
 
     bool isUncondi() {return unCondiStateInst == gem5::triStateVal::TRUE;}
-    bool isKlpLoad() const {return staticInst->isKlpLoad();}
-    bool isKlpStore() const {return staticInst->isKlpStore();}
+    bool isKlpLoad() const
+    { return cpu->isKlpEnabled() && staticInst->isKlpLoad(); }
+    bool isKlpStore() const
+    { return cpu->isKlpEnabled() && staticInst->isKlpStore(); }
     // } [klp]
 
     /** Load queue index. */

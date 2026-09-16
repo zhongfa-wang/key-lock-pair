@@ -113,6 +113,11 @@ BaseTags::areSecTagsValidInCache(const CacheBlk *blk, int granuleNum, int startI
 /* Store the sec tag value in cache and set it as valid.*/
 void 
 BaseTags::setSecTagInCache(const PacketPtr pkt, uint64_t tag_granularity, uint64_t val) {
+  assert(pkt->isKlpRead && pkt->isUnCondiReExe());
+  assert(!pkt->isBaseUnknown());
+  // Zero is a valid hash; only the MSB distinguishes an actual credential
+  // from the zero sentinel used for unavailable provenance.
+  assert(val & (uint64_t{1} << 63));
   // The unconditional load is being satisfied from a resident L1D block,
   // either on a hit or after a fill.
   CacheBlk *blk = findBlock({pkt->getAddr(), pkt->isSecure()});

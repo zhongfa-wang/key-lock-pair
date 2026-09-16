@@ -134,6 +134,13 @@ StaticInst::genSecTag(ExecContext *xc) const
     assert(xc != nullptr);
     assert(numSrcRegs() > 0);
 
+    BaseCPU *cpu = xc->tcBase()->getCpuPtr();
+    assert(cpu != nullptr);
+    if (!cpu->isKlpEnabled()) {
+        xc->setIsBaseUnknown(gem5::triStateVal::TRUE);
+        return 0;
+    }
+
     /*
      * 对于当前 RISC-V scalar/compressed load，
      * source operand 0 是 EA base register。
@@ -150,9 +157,6 @@ StaticInst::genSecTag(ExecContext *xc) const
      */
     auto *inst = dynamic_cast<gem5::o3::DynInst *>(xc);
     assert(inst != nullptr);
-
-    BaseCPU *cpu = xc->tcBase()->getCpuPtr();
-    assert(cpu != nullptr);
 
     /*
      * 必须在每一次 EA 执行时覆盖旧状态。

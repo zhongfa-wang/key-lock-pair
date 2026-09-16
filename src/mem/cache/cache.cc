@@ -416,7 +416,7 @@ Cache::handleTimingReqMiss(PacketPtr pkt, CacheBlk *blk, Tick forward_time,
     }
     // [klp] {
     /* The current implementation protects only L1D. */
-    if (cache_level == enums::CacheLevel::L1D){
+    if (isKlpRequest(pkt)) {
       /* If the packet is made by a speculative load, response core and make the request to the lower cache.*/
       if (!pkt->isUnCondiReExe() && pkt->isKlpRead){
         assert(pkt->needsResponse());

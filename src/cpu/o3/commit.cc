@@ -378,6 +378,7 @@ Commit::isDrained() const
 void
 Commit::takeOverFrom()
 {
+    nextKlpReplayThread = 0;
     _status = Active;
     _nextStatus = Inactive;
     for (ThreadID tid = 0; tid < numThreads; tid++) {
@@ -899,17 +900,36 @@ Commit::commit()
 
 // [klp] {
 void
-Commit::resolveInstsByThreatModel(){
-  ThreadID commit_thread = getCommittingThread();
-  if(rob->isEmpty() || commit_thread == -1)
-    return;
+Commit::resolveInstsByThreatModel()
+{
+    toIEW->instsToReExec.clear();
+    if (!cpu->isKlpEnabled())
+        return;
 
-  DynInstPtr head_inst = rob->readHeadInst(commit_thread);
-  ThreadID tid = head_inst->threadNumber;
-  wroteToTimeBuffer = rob->updateInstsToReExec(toIEW->instsToReExec,
-                                                head_inst, tid, cpu->getParaThreatModel(),
-                                                commitWidth);
-  }
+    // A rejected load cannot become commit-ready until it is replayed.
+    // Do not use getCommittingThread(), whose SMT policies require a ready
+    // ROB head. Select one eligible thread per cycle without disturbing
+    // the normal commit policy, preserving the shared commitWidth budget.
+    for (ThreadID offset = 0; offset < numThreads; ++offset) {
+        const ThreadID tid = (nextKlpReplayThread + offset) % numThreads;
+        if (std::find(activeThreads->begin(), activeThreads->end(), tid) ==
+                activeThreads->end() || rob->isEmpty(tid) ||
+            cpu->isThreadExiting(tid)) {
+            continue;
+        }
+        if (commitStatus[tid] != Running && commitStatus[tid] != Idle &&
+            commitStatus[tid] != FetchTrapPending) {
+            continue;
+        }
+        if (rob->updateInstsToReExec(toIEW->instsToReExec,
+                rob->readHeadInst(tid), tid, cpu->getParaThreatModel(),
+                commitWidth)) {
+            nextKlpReplayThread = (tid + 1) % numThreads;
+            wroteToTimeBuffer = true;
+            return;
+        }
+    }
+}
 // } [klp]
 void
 Commit::commitInsts()

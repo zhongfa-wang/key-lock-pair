@@ -130,6 +130,9 @@ class Commit
     /** Mark the thread as processing a trap. */
     void processTrapEvent(ThreadID tid);
 
+    /** Round-robin KLP replay arbitration, independent of commit readiness. */
+    ThreadID nextKlpReplayThread = 0;
+
   public:
     // [klp] {
     /* Fill the insts to be re-executed unconditionally into
