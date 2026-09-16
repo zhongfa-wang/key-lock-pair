@@ -175,8 +175,11 @@ BaseCache::verifySecTagInCache(const PacketPtr pkt)
   CacheBlk *blk = tags->findBlock({pkt->getAddr(), pkt->isSecure()});
   /* Tag verification starts at the granule the req pointing to. */
   int startIdx = (tags->extractBlkOffset(pkt->getAddr()) / tag_granularity);
-  unsigned granuleNumOfReq = gem5::divCeil(pkt->getSize(), tag_granularity);
-  assert(granuleNumOfReq <= (blkSize/tag_granularity));
+  const unsigned granuleOffset =
+      tags->extractBlkOffset(pkt->getAddr()) % tag_granularity;
+  unsigned granuleNumOfReq =
+      gem5::divCeil(granuleOffset + pkt->getSize(), tag_granularity);
+  assert(startIdx + granuleNumOfReq <= (blkSize/tag_granularity));
 
 
   DPRINTF(KLPDEBUG, "[BaseCache] Veri starts. Target addr: 0x%x, "
@@ -1286,6 +1289,13 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
         // all read responses have a data payload
         assert(pkt->hasRespData());
         pkt->setDataFromBlock(blk->data, blkSize);
+        // Both demand hits and MSHR completions reach this path. Install
+        // permission only for an unconditional KLP load, never a prefetch.
+        // Temporary fill blocks are not resident in the tag store.
+        if (cache_level == enums::CacheLevel::L1D &&
+            pkt->isKlpRead && pkt->isUnCondiReExe() && blk != tempBlock) {
+            tags->setSecTagInCache(pkt, tag_granularity, pkt->getSecTag());
+        }
     } else if (pkt->isUpgrade()) {
         // sanity check
         assert(!pkt->hasSharers());
@@ -1652,13 +1662,6 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         }
 
         satisfyRequest(pkt, blk);
-        // [klp] {
-        /* Unconditional loads will fill sec tags. */
-        if(cache_level == enums::CacheLevel::L1D && pkt->isUnCondiReExe()
-           && pkt->isKlpRead){
-          tags->setSecTagInCache(pkt, tag_granularity, pkt->getSecTag());
-        }
-        // } [klp]
         maintainClusivity(pkt->fromCache(), blk);
 
         return true;

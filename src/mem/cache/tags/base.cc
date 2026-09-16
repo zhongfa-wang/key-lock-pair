@@ -113,13 +113,16 @@ BaseTags::areSecTagsValidInCache(const CacheBlk *blk, int granuleNum, int startI
 /* Store the sec tag value in cache and set it as valid.*/
 void 
 BaseTags::setSecTagInCache(const PacketPtr pkt, uint64_t tag_granularity, uint64_t val) {
-  /* Setting sec tags always happens when an unconditional req
-  hit the L1D cache hence no need to check if the blk is valid.*/
+  // The unconditional load is being satisfied from a resident L1D block,
+  // either on a hit or after a fill.
   CacheBlk *blk = findBlock({pkt->getAddr(), pkt->isSecure()});
+  assert(blk && blk->isValid());
   int startIdx = extractBlkOffset(pkt->getAddr()) / tag_granularity;
-  unsigned granuleNumOfReq = gem5::divCeil(pkt->getSize(), tag_granularity);
-  assert(granuleNumOfReq <= (blkSize/tag_granularity));
-  assert(startIdx < (blkSize/tag_granularity));
+  const unsigned granuleOffset =
+      extractBlkOffset(pkt->getAddr()) % tag_granularity;
+  unsigned granuleNumOfReq =
+      gem5::divCeil(granuleOffset + pkt->getSize(), tag_granularity);
+  assert(startIdx + granuleNumOfReq <= (blkSize/tag_granularity));
   
   for(size_t i=startIdx ; i<(startIdx+granuleNumOfReq) ; ++i) {
     blk->secTagPtrInCache[i] = val;

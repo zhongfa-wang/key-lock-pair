@@ -816,6 +816,8 @@ LSQ::pushRequest(const DynInstPtr& inst, bool isLoad, uint8_t *data,
           // a strictly ordered load
           inst->getFault() = NoFault;
   
+          // Port/MSHR retries must reuse this unconditional request.
+          inst->isUncondiLsqreqBuilt = true;
           request->initiateTranslation();
           DPRINTF(KLPDEBUG, "[LSQ] Building lsqreq for uncondi insts. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, SecTagVal: 0x%x, uncondi state: %s, target addr: 0x%x.\n",
                   inst->pcState().instAddr(),

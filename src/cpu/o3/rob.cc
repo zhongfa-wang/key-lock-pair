@@ -139,6 +139,13 @@ ROB::updateInstsToReExec(std::vector<DynInstPtr>& instsToReExec,
 
   if(cpu->getParaThreatModel() == std::string("spectre")){
     unsigned resolvedNum = 0;
+    // A matching predicted PC is not proof that a branch has executed.
+    // Do not authorize younger loads across an unresolved head branch.
+    if (head_inst->isControl() && !head_inst->isExecuted()) {
+      DPRINTF(KLPDEBUG, "[ROB] Waiting for head branch resolution. SN:%llu\n",
+              head_inst->seqNum);
+      return false;
+    }
     if(!head_inst->mispredicted()){
       #include <algorithm>
       if(threadEntries[tid] != 0){

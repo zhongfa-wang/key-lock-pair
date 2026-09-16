@@ -492,6 +492,10 @@ class InstructionQueue
         statistics::Scalar nonSpecInstsAdded;
 
         statistics::Scalar instsIssued;
+        /** Actual issue events, excluding KLP replay enqueue bookkeeping. */
+        statistics::Scalar actualInstsIssued;
+        /** KLP replay entries processed for re-enqueue. */
+        statistics::Scalar klpReplayEnqueues;
         /** Stat for number of integer instructions issued. */
         statistics::Scalar intInstsIssued;
         /** Stat for number of floating point instructions issued. */

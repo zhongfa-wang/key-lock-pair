@@ -190,6 +190,10 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
              "Number of non-speculative instructions added to the IQ"),
     ADD_STAT(instsIssued, statistics::units::Count::get(),
              "Number of instructions issued"),
+    ADD_STAT(actualInstsIssued, statistics::units::Count::get(),
+             "Actual issue events excluding KLP replay enqueues"),
+    ADD_STAT(klpReplayEnqueues, statistics::units::Count::get(),
+             "KLP replay enqueues (not actual issue events)"),
     ADD_STAT(intInstsIssued, statistics::units::Count::get(),
              "Number of integer instructions issued"),
     ADD_STAT(floatInstsIssued, statistics::units::Count::get(),
@@ -778,8 +782,9 @@ InstructionQueue::scheduleReadyInsts()
     // [klp] {
     auto it_uncondi = fromCommit->instsToReExec.begin();
     auto it_uncondi_end = fromCommit->instsToReExec.end();
-    while(total_issued < totalWidth && fromCommit->instsToReExec.size() != 0 
-          && it_uncondi != it_uncondi_end){
+    // Enqueuing a ready instruction consumes no execution bandwidth.
+    // The normal issue loop below applies totalWidth to actual issues.
+    while(it_uncondi != it_uncondi_end){
             assert(it_uncondi->get() != nullptr && "Instruction pointer is null!");
             assert(it_uncondi->get()->getUncondiState() == gem5::triStateVal::TRUE &&
                    it_uncondi->get()->isKlpLoad());
@@ -796,7 +801,7 @@ InstructionQueue::scheduleReadyInsts()
                     it_uncondi->get()->isUncondi()?"True":"False"
                     );
             ++it_uncondi;
-            ++total_issued;
+            ++iqStats.klpReplayEnqueues;
     }
     // } [klp]
     ListOrderIt order_it = listOrder.begin();
@@ -912,6 +917,7 @@ InstructionQueue::scheduleReadyInsts()
 
             issuing_inst->setIssued();
             ++total_issued;
+            ++iqStats.actualInstsIssued;
 
 #if TRACING_ON
             issuing_inst->issueTick = curTick() - issuing_inst->fetchTick;

@@ -435,6 +435,10 @@ Cache::handleTimingReqMiss(PacketPtr pkt, CacheBlk *blk, Tick forward_time,
                                                   pkt->req->getSize(),
                                                   pkt->req->getFlags(),
                                                   pkt->req->requestorId());
+          // Downstream stride prefetchers train on the demand PC. Keep
+          // that metadata without giving this background fetch a KLP key.
+          if (pkt->req->hasPC())
+              req->setPC(pkt->req->getPC());
           /* The request made to the lower cache is done by a software prefetch. */
           MemCmd prefetchCmd = MemCmd::SoftPFReq;
           pf = new Packet(req, prefetchCmd);
