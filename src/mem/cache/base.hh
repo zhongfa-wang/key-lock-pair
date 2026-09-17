@@ -120,6 +120,7 @@ class BaseCache : public ClockedObject
     const uint64_t tag_granularity;
     uint64_t tagBitMask;
     const bool klpEnabled;
+    const bool klpStoreInstall;
 
     /** Whether this packet is subject to L1D KLP permission checks. */
     bool isKlpRequest(const PacketPtr pkt) const;
@@ -1102,6 +1103,7 @@ class BaseCache : public ClockedObject
         statistics::Scalar tagVeriNum;
         statistics::Scalar tagVeriPassNum;
         statistics::Scalar tagVeriFailNum;
+        statistics::Scalar klpStoreInstallNum;
         statistics::Scalar failCuzofL1DMissNum;
         statistics::Scalar failCuzofTagMismatchNum;
 

@@ -396,6 +396,8 @@ class Packet : public Printable, public Extensible<Packet>
     public:
     /* Is the corresponding inst a klpload (load that is protected by klp). */
     bool isKlpRead = false;
+    /* KLP store carrying the credential of its destination address. */
+    bool isKlpWrite = false;
 
     uint64_t getSecTag() {return secTagInPkt;}
     /* If the pkt is from a speculative load or not. */
@@ -999,6 +1001,15 @@ class Packet : public Printable, public Extensible<Packet>
 
         flags.set(pkt->flags & (VALID_ADDR|VALID_SIZE));
 
+        // Keep a copied store's marker and credential together. Fresh
+        // writebacks and cache-line acquisition requests are not KLP stores.
+        if (pkt->isKlpWrite) {
+            isKlpWrite = true;
+            secTagInPkt = pkt->secTagInPkt;
+            baseUnknown = pkt->baseUnknown;
+            unCondiStatePkt = pkt->unCondiStatePkt;
+        }
+
         if (pkt->isHtmTransactional())
             setHtmTransactional(pkt->getHtmTransactionUid());
 
@@ -1085,6 +1096,16 @@ class Packet : public Printable, public Extensible<Packet>
         return new Packet(req, makeWriteCmd(req));
     }
     // [klp] {
+    static PacketPtr
+    createKlpWrite(const RequestPtr &req, triStateVal unCondiState,
+                   uint64_t secTag, triStateVal baseUnknownFlag)
+    {
+        PacketPtr pkt = new Packet(req, makeWriteCmd(req), unCondiState,
+                                   secTag, baseUnknownFlag);
+        pkt->isKlpWrite = true;
+        return pkt;
+    }
+
     /* Alternative createRead and for baseAddr */
     static PacketPtr
     createRead(const RequestPtr &req, triStateVal unCondiState, const uint64_t secTag, triStateVal baseUnknownFlag)

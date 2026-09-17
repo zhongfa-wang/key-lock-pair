@@ -218,6 +218,7 @@ class KLPPL1PL2SL3CacheHierarchy(PrivateL1PrivateL2SharedL3CacheHierarchy):
         tag_pos: int,
         tag_granularity: int,
         threat_model: str,
+        klp_store_install: bool = False,
         **kwargs
     ) -> None:
 
@@ -226,6 +227,7 @@ class KLPPL1PL2SL3CacheHierarchy(PrivateL1PrivateL2SharedL3CacheHierarchy):
         self._tag_pos = tag_pos
         self._tag_granularity = tag_granularity
         self._threat_model = threat_model
+        self._klp_store_install = klp_store_install
 
     @overrides(AbstractCacheHierarchy)
     def incorporate_cache(self, board: AbstractBoard) -> None:
@@ -255,6 +257,7 @@ class KLPPL1PL2SL3CacheHierarchy(PrivateL1PrivateL2SharedL3CacheHierarchy):
                 threat_model=self._threat_model,
                 size=self._l1d_size,
                 assoc=self._l1d_assoc,
+                klp_store_install=self._klp_store_install,
             )
             for i in range(board.get_processor().get_num_cores())
         ]

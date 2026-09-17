@@ -322,6 +322,9 @@ class LSQ
         /** Build a read packet after translation, including KLP metadata. */
         PacketPtr createReadPacket(const RequestPtr &req);
 
+        /** Build a store packet with the address credential, when available. */
+        PacketPtr createWritePacket(const RequestPtr &req);
+
         bool squashed() const override;
 
 

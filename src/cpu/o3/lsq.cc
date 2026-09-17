@@ -1296,6 +1296,23 @@ LSQ::LSQRequest::createReadPacket(const RequestPtr &req)
     return pkt;
 }
 
+PacketPtr
+LSQ::LSQRequest::createWritePacket(const RequestPtr &req)
+{
+    // As with reads, bypass the whole split access when any fragment is
+    // uncacheable or strictly ordered. INIT means no KLP key was generated.
+    if (!_inst->isKlpStore() || mainReq()->isUncacheable() ||
+        mainReq()->isStrictlyOrdered() ||
+        _inst->getIsBaseUnknown() == gem5::triStateVal::INIT) {
+        return Packet::createWrite(req);
+    }
+    assert(unCondiState == _inst->getUncondiState());
+    const auto unknown = _inst->getIsBaseUnknown();
+    const uint64_t key = unknown == gem5::triStateVal::TRUE ?
+        0 : _inst->getSecTagInDynInst();
+    return Packet::createKlpWrite(req, unCondiState, key, unknown);
+}
+
 void
 LSQ::SingleDataRequest::buildPackets()
 {
@@ -1306,9 +1323,7 @@ LSQ::SingleDataRequest::buildPackets()
         _packets.push_back(
                 isLoad()
                     ? createReadPacket(req())
-                    /* Only make read pkts carry the sec tags. */
-                    // :  Packet::createWrite(req(), instruction()->getUncondiState(), secTagRegVal));
-                    :  Packet::createWrite(req()));
+                    : createWritePacket(req()));
         DPRINTF(KLPDEBUG, "[LSQ] LSQ building a single req. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, SecTagVal: 0x%x, uncondi state: %s, target addr: 0x%x.\n",
                 instruction()->pcState().instAddr(),
                 instruction()->seqNum,
@@ -1372,7 +1387,7 @@ LSQ::SplitDataRequest::buildPackets()
             // [klp]
             assert(this->unCondiState == instruction()->getUncondiState());
             PacketPtr pkt = isLoad() ? createReadPacket(req)
-                                     : Packet::createWrite(req);
+                                     : createWritePacket(req);
             /* DPRINTF(KLPDEBUG, "[LSQ] LSQ building a split sub req. SecTagVal: 0x%x, sub pkt obj addr: 0x%x.\n",
                             instruction()->getSecTagInDynInst(), pkt); */
             // } [klp]

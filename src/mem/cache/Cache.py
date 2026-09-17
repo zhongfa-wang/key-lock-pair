@@ -93,6 +93,9 @@ class BaseCache(ClockedObject):
     tag_pos         = Param.UInt64(4, "Retained for configuration compatibility; cache tags are stored and compared in the low tag_width bits.")
     tag_granularity = Param.UInt64(16, "The granularity of tags. One key per 16 Bytes by default. The blkSize should be divisible by this number. ")
     threat_model    = Param.String("spectre", "Threat model. Options: 'spectre' (default), 'futuristic', 'disable'.") # Disable means sec tag verification always return true.
+    klp_store_install = Param.Bool(
+        False, "KLP stores install their key in the L1D granules they write"
+    )
     # } [klp]
 
     size = Param.MemorySize("Capacity")

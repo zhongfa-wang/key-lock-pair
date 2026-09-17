@@ -98,6 +98,7 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
       // CPU hashes return low-bit tags; exclude the MSB validity marker.
       tagBitMask(p.system->initWidthMask(p.tag_width)),
       klpEnabled(p.threat_model != "disable"),
+      klpStoreInstall(p.klp_store_install),
       // } [klp]
       cpuSidePort (p.name + ".cpu_side_port", *this, "CpuSidePort"),
       memSidePort(p.name + ".mem_side_port", this, "MemSidePort"),
@@ -1284,6 +1285,23 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
         // Write or WriteLine at the first cache with block in writable state
         if (blk->checkWrite(pkt)) {
             updateBlockData(blk, pkt, true);
+            // Ordinary O3 stores reach the cache after commit. Install only
+            // after a successful write, so a failed SC cannot change locks.
+            // Uncached/ordered accesses and temporary fill blocks do not
+            // establish resident L1D permissions.
+            if (klpEnabled && klpStoreInstall &&
+                cache_level == enums::CacheLevel::L1D && pkt->isKlpWrite &&
+                !pkt->req->isUncacheable() &&
+                !pkt->req->isStrictlyOrdered() &&
+                !pkt->isBaseUnknown() && blk != tempBlock) {
+                tags->setSecTagInCache(pkt, tag_granularity, pkt->getSecTag());
+                ++stats.klpStoreInstallNum;
+                DPRINTF(KLPDEBUG,
+                        "[Cache] Store installed key: addr=%#x size=%u "
+                        "key=%#x SN=%llu\n",
+                        pkt->getAddr(), pkt->getSize(), pkt->getSecTag(),
+                        pkt->req->getReqInstSeqNum());
+            }
         }
         // Always mark the line as dirty (and thus transition to the
         // Modified state) even if we are a failed StoreCond so we
@@ -2420,6 +2438,8 @@ BaseCache::CacheStats::CacheStats(BaseCache &c)
     "Total number of passed KLP tag verification."),
     ADD_STAT(tagVeriFailNum, statistics::units::Count::get(),
     "Total number of failed KLP tag verification"),
+    ADD_STAT(klpStoreInstallNum, statistics::units::Count::get(),
+    "Key installations by KLP stores (split fragments counted separately)."),
     ADD_STAT(failCuzofL1DMissNum, statistics::units::Count::get(),
     "Total number of failed KLP tag verification caused by L1D miss."),
     ADD_STAT(failCuzofTagMismatchNum, statistics::units::Count::get(),

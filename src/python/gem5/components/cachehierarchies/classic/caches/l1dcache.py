@@ -81,6 +81,7 @@ class KLPL1DCache(L1DCache):
         tag_pos: int = 4,
         tag_granularity: int = 16,
         threat_model="spectre",
+        klp_store_install: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -89,6 +90,7 @@ class KLPL1DCache(L1DCache):
         self.tag_pos = tag_pos
         self.tag_granularity = tag_granularity
         self.threat_model = threat_model
+        self.klp_store_install = klp_store_install
 
 
 # } [klp]
