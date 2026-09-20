@@ -44,6 +44,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <memory>
 #include <queue>
@@ -281,6 +282,19 @@ class LSQUnit
      * memory system. */
     void completeDataAccess(PacketPtr pkt);
 
+    /** Release buffered data, or wake a key-blocked STLF, upon authorization. */
+    void grantKlpUncondi(const DynInstPtr &inst);
+
+    /** Retired metadata writes have no dependency on an LQ entry's lifetime. */
+    struct KlpLockSenderState : public Packet::SenderState
+    {
+        LSQUnit *unit;
+        explicit KlpLockSenderState(LSQUnit *unit) : unit(unit) {}
+    };
+    void recvKlpLockResp(PacketPtr pkt);
+    bool hasPendingKlpInstalls() const { return !klpInstalls.empty(); }
+    unsigned numPendingKlpInstalls() const { return klpInstalls.size(); }
+
     /** Squashes all instructions younger than a specific sequence number. */
     void squash(const InstSeqNum &squashed_num);
 
@@ -324,10 +338,12 @@ class LSQUnit
     bool isFull() { return lqFull() || sqFull(); }
 
     /** Returns if both the LQ and SQ are empty. */
-    bool isEmpty() const { return lqEmpty() && sqEmpty(); }
+    bool isEmpty() const
+    { return lqEmpty() && sqEmpty() && klpInstalls.empty(); }
 
     /** Returns if the LQ is full. */
-    bool lqFull() { return loadQueue.full(); }
+    bool lqFull()
+    { return loadQueue.size() + klpInstalls.size() >= loadQueue.capacity(); }
 
     /** Returns if the SQ is full. */
     bool sqFull() { return storeQueue.full(); }
@@ -342,20 +358,20 @@ class LSQUnit
     unsigned getCount() { return loadQueue.size() + storeQueue.size(); }
 
     /** Returns if there are any stores to writeback. */
-    bool hasStoresToWB() { return storesToWB; }
+    bool hasStoresToWB() { return storesToWB || !klpInstalls.empty(); }
 
     /** Returns the number of stores to writeback. */
-    int numStoresToWB() { return storesToWB; }
+    int numStoresToWB() { return storesToWB + klpInstalls.size(); }
 
     /** Returns if the LSQ unit will writeback on this cycle. */
     bool
     willWB()
     {
-        return storeWBIt.dereferenceable() &&
+        return !klpInstalls.empty() || (storeWBIt.dereferenceable() &&
                         storeWBIt->valid() &&
                         storeWBIt->canWB() &&
                         !storeWBIt->completed() &&
-                        !isStoreBlocked;
+                        !isStoreBlocked);
     }
 
     /** Handles doing the retry. */
@@ -363,6 +379,21 @@ class LSQUnit
 
     unsigned int cacheLineSize();
   private:
+    struct KlpInstall
+    {
+        InstSeqNum seq;
+        std::deque<PacketPtr> packets;
+        bool inFlight = false;
+    };
+    // Retiring a load transfers its reserved LQ credit to this queue until
+    // the last metadata response arrives. No unbounded post-retire state.
+    std::deque<KlpInstall> klpInstalls;
+    void queueKlpInstall(const DynInstPtr &inst, LSQRequest *request);
+    void serviceKlpInstalls();
+    bool hasOlderKlpInstall(InstSeqNum seq) const;
+    void wakeKlpStlfLoads(InstSeqNum store_seq);
+    bool validateKlpLoad(const DynInstPtr &inst, LSQRequest *request);
+
     /** Reset the LSQ state */
     void resetState();
 
@@ -515,6 +546,20 @@ class LSQUnit
 
         /** Total number of loads forwaded from LSQ stores. */
         statistics::Scalar forwLoads;
+        statistics::Scalar klpChecks;
+        statistics::Scalar klpPassed;
+        statistics::Scalar klpMismatch;
+        statistics::Scalar klpUnknownKey;
+        statistics::Scalar klpInvalidLock;
+        statistics::Scalar klpHeldLoads;
+        statistics::Scalar klpReleasedLoads;
+        statistics::Scalar klpWaitCycles;
+        statistics::Scalar klpStlfBlocked;
+        statistics::Scalar klpStlfRetries;
+        statistics::Scalar klpStlfPassed;
+        statistics::Scalar klpInstallQueued;
+        statistics::Scalar klpInstallSent;
+        statistics::Scalar klpInstallCompleted;
 
         /** Total number of squashed loads. */
         statistics::Scalar squashedLoads;

@@ -779,31 +779,6 @@ InstructionQueue::scheduleReadyInsts()
     // This will avoid trying to schedule a certain op class if there are no
     // FUs that handle it.
     int total_issued = 0;
-    // [klp] {
-    auto it_uncondi = fromCommit->instsToReExec.begin();
-    auto it_uncondi_end = fromCommit->instsToReExec.end();
-    // Enqueuing a ready instruction consumes no execution bandwidth.
-    // The normal issue loop below applies totalWidth to actual issues.
-    while(it_uncondi != it_uncondi_end){
-            assert(it_uncondi->get() != nullptr && "Instruction pointer is null!");
-            assert(it_uncondi->get()->getUncondiState() == gem5::triStateVal::TRUE &&
-                   it_uncondi->get()->isKlpLoad());
-            assert(!it_uncondi->get()->isReScheduled);
-            if(!it_uncondi->get()->isSquashed()){
-              it_uncondi->get()->setCanIssue();
-              addIfReady(it_uncondi->get());
-            }
-            it_uncondi->get()->isReScheduled = true;
-            DPRINTF(KLPDEBUG, "[IQ] Reexecuting inst. Adding it to the readyList. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, uncondi state: %s.\n",
-                    it_uncondi->get()->pcState().instAddr(),
-                    it_uncondi->get()->seqNum,
-                    it_uncondi->get()->staticInst->disassemble(it_uncondi->get()->pcState().instAddr()),
-                    it_uncondi->get()->isUncondi()?"True":"False"
-                    );
-            ++it_uncondi;
-            ++iqStats.klpReplayEnqueues;
-    }
-    // } [klp]
     ListOrderIt order_it = listOrder.begin();
     ListOrderIt order_end_it = listOrder.end();
 
@@ -925,12 +900,6 @@ InstructionQueue::scheduleReadyInsts()
 
             if (issuing_inst->firstIssue == -1)
                 issuing_inst->firstIssue = curTick();
-            // [klp] {
-            /* Update stats */
-            if (issuing_inst->getUncondiState() == gem5::triStateVal::TRUE)
-                issuing_inst->firstIssue = curTick();
-            // } [klp]
-
             if (!issuing_inst->isMemRef()) {
                 // Memory instructions can not be freed from the IQ until they
                 // complete.
@@ -1149,6 +1118,18 @@ void
 InstructionQueue::replayMemInst(const DynInstPtr &replay_inst)
 {
     memDepUnit[replay_inst->threadNumber].replay();
+}
+
+void
+InstructionQueue::retryKlpLoad(const DynInstPtr &inst)
+{
+    // Only the selected blocked load is moved; normal replay() wakes all
+    // waiting memory operations and would duplicate concurrent wakeups.
+    if (memDepUnit[inst->threadNumber].replay(inst)) {
+        ++iqStats.klpReplayEnqueues;
+        cpu->wakeCPU();
+        cpu->activityThisCycle();
+    }
 }
 
 void

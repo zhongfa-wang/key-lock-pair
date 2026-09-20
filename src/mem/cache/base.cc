@@ -148,6 +148,11 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
     tempBlock = new TempCacheBlk(blkSize,
         genTagExtractor(tags->params().indexing_policy));
 
+    if (klpEnabled) {
+        fatal_if(!tag_granularity || blkSize % tag_granularity,
+                 "KLP granularity must divide the cache line size");
+        tempBlock->ensureSecTagStorage(blkSize / tag_granularity);
+    }
     tags->tagsInit();
     if (prefetcher)
         prefetcher->setParentInfo(system, getProbeManager(), getBlockSize());
@@ -166,80 +171,69 @@ BaseCache::~BaseCache()
     delete tempBlock;
 }
 // [klp] {
-bool
-BaseCache::isKlpRequest(const PacketPtr pkt) const
+void
+BaseCache::exportSecTagMetadata(PacketPtr pkt, const CacheBlk *blk) const
 {
-    return pkt && klpEnabled && cache_level == enums::CacheLevel::L1D &&
-        pkt->isKlpRead && !pkt->req->isUncacheable() &&
-        !pkt->req->isStrictlyOrdered();
+    if (!klpEnabled) {
+        pkt->clearSecTagLineMetadata();
+        return;
+    }
+    assert(blk && blk->isValid());
+    const unsigned granules = blkSize / tag_granularity;
+    pkt->hasSecTagLineMetadataPkt = true;
+    pkt->secTagLineFromCleanSnoopPkt = false;
+    pkt->secTagLineGranularityPkt = tag_granularity;
+    pkt->secTagLineValuesPkt.assign(granules, 0);
+    pkt->secTagLineValidBitsPkt.assign(granules, false);
+    if (blk->secTagPtrInCache) {
+        assert(blk->secTagValidBitsInCache.size() == granules);
+        std::copy_n(blk->secTagPtrInCache, granules,
+                    pkt->secTagLineValuesPkt.begin());
+        pkt->secTagLineValidBitsPkt = blk->secTagValidBitsInCache;
+    }
 }
 
-triStateVal
-BaseCache::verifySecTagInCache(const PacketPtr pkt)
-
-{ assert(pkt->isKlpRead);
-  assert(!pkt->isUnCondiReExe());
-  assert(!pkt->isBaseUnknown());
-  /* Tag verification always happens after a cache hit hence no need to check
-  if the blk is valid.*/
-  CacheBlk *blk = tags->findBlock({pkt->getAddr(), pkt->isSecure()});
-  /* Tag verification starts at the granule the req pointing to. */
-  int startIdx = (tags->extractBlkOffset(pkt->getAddr()) / tag_granularity);
-  const unsigned granuleOffset =
-      tags->extractBlkOffset(pkt->getAddr()) % tag_granularity;
-  unsigned granuleNumOfReq =
-      gem5::divCeil(granuleOffset + pkt->getSize(), tag_granularity);
-  assert(startIdx + granuleNumOfReq <= (blkSize/tag_granularity));
-
-
-  DPRINTF(KLPDEBUG, "[BaseCache] Veri starts. Target addr: 0x%x, "
-                          "request size: 0x%x, startIdx: %d, granuleNumOfReq:%d.\n",
-          pkt->req->getVaddr(),
-          pkt->getSize(),
-          startIdx,
-          granuleNumOfReq);
-  if(!tags->areSecTagsValidInCache(blk, granuleNumOfReq, startIdx, pkt)) {
-    DPRINTF(KLPDEBUG, "[BaseCache] Sec tag invalid. Target addr: 0x%x, "
-                            " request size: 0x%x.\n",
-            pkt->req->getVaddr(),
-            pkt->getSize());
-    return gem5::triStateVal::FALSE;
-  } else {
-    bool areAllSecTagsMatch = true;
-    /* Validate if all sec tags match. */
-    for(size_t i=0 ; i<granuleNumOfReq ; ++i) {
-      areAllSecTagsMatch = areAllSecTagsMatch &&
-      ((pkt->getSecTag() & tagBitMask) == ((blk->secTagPtrInCache[startIdx+i]) & tagBitMask));
-
-      DPRINTF(KLPDEBUG, "[BaseCache] Performing verification for %dth granule. Target addr: 0x%x,"
-                            " request size: 0x%x, "
-                            " parameter-tag_pos: %d"
-                            " cache sec tag: 0x%x, cache sec tag with mask: 0x%x,"
-                            " pkt sec tag: 0x%x, tag bit mask: 0x%x, pkt sec tag with mask: 0x%x\n",
-              i,
-              pkt->req->getVaddr(),
-              pkt->getSize(),
-              tag_pos,
-              (blk->secTagPtrInCache[startIdx]),
-              ((blk->secTagPtrInCache[startIdx]) & tagBitMask),
-              pkt->getSecTag(),
-              tagBitMask,
-              (pkt->getSecTag() & tagBitMask));
+void
+BaseCache::importSecTagMetadata(CacheBlk *blk, const PacketPtr pkt)
+{
+    if (!klpEnabled)
+        return;
+    const unsigned granules = blkSize / tag_granularity;
+    blk->ensureSecTagStorage(granules);
+    if (!pkt->hasSecTagLineMetadataPkt) {
+        // The data came from memory, which has no persistent lock storage.
+        blk->invalidateSecTag();
+        return;
     }
-    DPRINTF(KLPDEBUG, "[BaseCache] Veri finished. Target addr: 0x%x, request size: 0x%x, "
-                          "veri result: %s.\n",
-            pkt->req->getVaddr(),
-            pkt->getSize(),
-            areAllSecTagsMatch?"Pass":"Fail");
-    /* Update stats */
-    stats.cmdStats(pkt).tagVeriInCacheNum++;
-    if(areAllSecTagsMatch) {
-      stats.cmdStats(pkt).tagVeriInCachePassNum++;
-    } else {
-      stats.cmdStats(pkt).tagVeriInCacheNotPassNum++;
+    panic_if(pkt->secTagLineGranularityPkt != tag_granularity ||
+             pkt->secTagLineValuesPkt.size() != granules ||
+             pkt->secTagLineValidBitsPkt.size() != granules,
+             "%s: incompatible KLP line metadata geometry", name());
+    std::copy(pkt->secTagLineValuesPkt.begin(),
+              pkt->secTagLineValuesPkt.end(), blk->secTagPtrInCache);
+    // Replace invalid bits too: merging only valid entries resurrects locks.
+    blk->secTagValidBitsInCache = pkt->secTagLineValidBitsPkt;
+}
+
+void
+BaseCache::installSecTag(CacheBlk *blk, const PacketPtr pkt)
+{
+    assert(blk && blk->isValid());
+    assert(blk->isSet(CacheBlk::WritableBit));
+    assert(pkt->getSecTag() & (uint64_t{1} << 63));
+    const unsigned offset = pkt->getOffset(blkSize);
+    assert(pkt->getSize() && offset + pkt->getSize() <= blkSize);
+    blk->ensureSecTagStorage(blkSize / tag_granularity);
+    const unsigned first = offset / tag_granularity;
+    const unsigned end = divCeil(offset + pkt->getSize(), tag_granularity);
+    for (unsigned i = first; i < end; ++i) {
+        blk->secTagPtrInCache[i] = pkt->getSecTag();
+        blk->secTagValidBitsInCache[i] = true;
     }
-    return areAllSecTagsMatch ? gem5::triStateVal::TRUE : gem5::triStateVal::FALSE;
-  }
+    // A metadata-only change must still create an owner. Using the normal
+    // dirty state makes snoops and evictions carry the latest data+locks,
+    // even when no data byte changed. Never write saved load data here.
+    blk->setCoherenceBits(CacheBlk::DirtyBit);
 }
 // } [klp]
 
@@ -390,10 +384,6 @@ BaseCache::handleTimingReqHit(PacketPtr pkt, CacheBlk *blk, Tick request_time)
         // lat, neglecting responseLatency, modelling hit latency
         // just as the value of lat overriden by access(), which calls
         // the calculateAccessLatency() function.
-        // [klp] {
-        if(pkt->isUnCondiReExe())
-          assert(pkt->getPassSecTagVeri() != gem5::triStateVal::INIT);
-        // } [klp]
         cpuSidePort.schedTimingResp(pkt, request_time);
     } else {
         DPRINTF(Cache, "%s satisfied %s, no response needed\n", __func__,
@@ -508,17 +498,8 @@ BaseCache::handleTimingReqMiss(PacketPtr pkt, MSHR *mshr, CacheBlk *blk,
 void
 BaseCache::recvTimingReq(PacketPtr pkt)
 {
-    // [klp] {
-    /* The pkt of an uncondi request is always be marked as tag verification
-    passed.*/
-      if (cache_level == enums::CacheLevel::L1D && pkt->isKlpRead &&
-          (pkt->isUnCondiReExe() || !isKlpRequest(pkt)))
-        pkt->setPassSecTagVeri(gem5::triStateVal::TRUE);
-    /* If it's a request from speculative load, there will always be a sec tag
-    verification. */
-    // if(cache_level == enums::CacheLevel::L1D && !pkt->isUnCondiReExe() && pkt->isKlpRead){
-    if (klpEnabled && cache_level == enums::CacheLevel::L1D) {
-      stats.tagVeriNum++;
+    if (klpEnabled && cache_level == enums::CacheLevel::L1D &&
+        !pkt->isKlpLockInstall()) {
       if (pkt->isWrite()) {
         stats.WriteNum++;
       } else if (pkt->isRead()) {
@@ -853,6 +834,15 @@ BaseCache::functionalAccess(PacketPtr pkt, bool from_cpu_side)
     MSHR *mshr = mshrQueue.findMatch(blk_addr, is_secure);
 
     pkt->pushLabel(name());
+
+    // Drained functional writeback clears ownership after updating data.
+    // Update locks on every extant copy too, before the old owner becomes
+    // clean; otherwise a later read could observe a stale lower-level lock.
+    if (pkt->isWrite() && pkt->hasSecTagLineMetadataPkt &&
+        blk && blk->isValid()) {
+        assert(pkt->getOffset(blkSize) == 0 && pkt->getSize() == blkSize);
+        importSecTagMetadata(blk, pkt);
+    }
 
     CacheBlkPrintWrapper cbpw(blk);
 
@@ -1240,9 +1230,20 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
     // assert(!pkt->needsWritable() || blk->isSet(CacheBlk::WritableBit));
     assert(pkt->getOffset(blkSize) + pkt->getSize() <= blkSize);
 
-    // Check RMW operations first since both isRead() and
-    // isWrite() will be true for them
-    if (pkt->cmd == MemCmd::SwapReq) {
+    if (pkt->isRead())
+        exportSecTagMetadata(pkt, blk);
+
+    if (pkt->isKlpLockInstall()) {
+        assert(pkt->cmd == MemCmd::KlpLockReq);
+        assert(klpEnabled && cache_level == enums::CacheLevel::L1D);
+        assert(!pkt->req->isUncacheable() && !pkt->req->isStrictlyOrdered());
+        installSecTag(blk, pkt);
+        ++stats.klpLockInstallNum;
+        DPRINTF(KLPDEBUG, "[Cache] Retired load installed key: "
+                "addr=%#x size=%u key=%#x\n",
+                pkt->getAddr(), pkt->getSize(), pkt->getSecTag());
+    // Check RMW operations before the ordinary read/write cases.
+    } else if (pkt->cmd == MemCmd::SwapReq) {
         if (pkt->isAtomicOp()) {
             // Get a copy of the old block's contents for the probe before
             // the update
@@ -1287,14 +1288,15 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
             updateBlockData(blk, pkt, true);
             // Ordinary O3 stores reach the cache after commit. Install only
             // after a successful write, so a failed SC cannot change locks.
-            // Uncached/ordered accesses and temporary fill blocks do not
-            // establish resident L1D permissions.
+            // Uncached/ordered accesses do not establish permissions.
+            // A temporary fill is supported: its dirty eviction carries
+            // the installed locks into the lower cache.
             if (klpEnabled && klpStoreInstall &&
                 cache_level == enums::CacheLevel::L1D && pkt->isKlpWrite &&
                 !pkt->req->isUncacheable() &&
                 !pkt->req->isStrictlyOrdered() &&
-                !pkt->isBaseUnknown() && blk != tempBlock) {
-                tags->setSecTagInCache(pkt, tag_granularity, pkt->getSecTag());
+                !pkt->isBaseUnknown()) {
+                installSecTag(blk, pkt);
                 ++stats.klpStoreInstallNum;
                 DPRINTF(KLPDEBUG,
                         "[Cache] Store installed key: addr=%#x size=%u "
@@ -1317,13 +1319,6 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
         // all read responses have a data payload
         assert(pkt->hasRespData());
         pkt->setDataFromBlock(blk->data, blkSize);
-        // Both demand hits and MSHR completions reach this path. Install
-        // permission only for an unconditional KLP load, never a prefetch.
-        // Temporary fill blocks are not resident in the tag store.
-        if (isKlpRequest(pkt) && pkt->isUnCondiReExe() &&
-            !pkt->isBaseUnknown() && blk != tempBlock) {
-            tags->setSecTagInCache(pkt, tag_granularity, pkt->getSecTag());
-        }
     } else if (pkt->isUpgrade()) {
         // sanity check
         assert(!pkt->hasSharers());
@@ -1534,6 +1529,7 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         assert(!pkt->needsResponse());
 
         updateBlockData(blk, pkt, has_old_data);
+        importSecTagMetadata(blk, pkt);
         DPRINTF(Cache, "%s new state is %s\n", __func__, blk->print());
         incHitCount(pkt);
 
@@ -1609,6 +1605,7 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         assert(!pkt->needsResponse());
 
         updateBlockData(blk, pkt, has_old_data);
+        importSecTagMetadata(blk, pkt);
         DPRINTF(Cache, "%s new state is %s\n", __func__, blk->print());
 
         incHitCount(pkt);
@@ -1636,55 +1633,6 @@ BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
             if (compressor) {
                 lat += compressor->getDecompressionLatency(blk);
             }
-            // [klp] {
-            /* The current implementation protects only L1D. */
-            /* This is on the path of a read hits L1D.*/
-            if (isKlpRequest(pkt)) {
-              /* If the packet is made by a speculative load, perform tag verification.*/
-              if(!pkt->isUnCondiReExe()){
-                
-                /* If the baseAddr is unknown, set the veri result as fail and return 
-                directly. Not satisfy the request.*/
-                if (pkt->isBaseUnknown()){
-                  pkt->setPassSecTagVeri(gem5::triStateVal::FALSE);
-
-                  /*
-                  * Count this as a rejected speculative request, but do
-                  * not classify it as a tag mismatch.
-                  */
-                  stats.tagVeriFailNum++;
-
-                  DPRINTF(KLPDEBUG,
-                          "[BaseCache] Rejecting speculative KLP load "
-                          "because credential is unavailable. "
-                          "Target addr: %#lx, request size: %#x.\n",
-                          pkt->req->getVaddr(),
-                          pkt->getSize());
-                  return true;
-                }
-                
-                gem5::triStateVal secTagVeriResult = verifySecTagInCache(pkt);
-                assert(secTagVeriResult != gem5::triStateVal::INIT);
-                /* If the tag verifies to pass, then the cache performs as normal. */
-                pkt->setPassSecTagVeri(secTagVeriResult);
-                DPRINTF(KLPDEBUG, "[BaseCache] Hit on L1D. Target addr: 0x%x, "
-                                        "request size: 0x%x, veri result: %s.\n",
-                        pkt->req->getVaddr(),
-                        pkt->getSize(),
-                        pkt->passSecTagVeri()?"Pass":"Fail");
-                if (secTagVeriResult == gem5::triStateVal::TRUE) {
-                  stats.tagVeriPassNum++;
-                }
-                /* If not, the cache sets the flag in packet as not pass and returns
-                directly. No need to satisfy the request. */
-                if (secTagVeriResult == gem5::triStateVal::FALSE) {
-                  stats.tagVeriFailNum++;
-                  stats.failCuzofTagMismatchNum++;
-                  return true;
-                }
-              }
-            }
-            // } [klp]
         } else {
             lat = calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
         }
@@ -1811,6 +1759,7 @@ BaseCache::handleFill(PacketPtr pkt, CacheBlk *blk, PacketList &writebacks,
         assert(pkt->getSize() == blkSize);
 
         updateBlockData(blk, pkt, has_old_data);
+        importSecTagMetadata(blk, pkt);
     }
     // The block will be ready when the payload arrives and the fill is done
     blk->setWhenReady(clockEdge(fillLatency) + pkt->headerDelay +
@@ -1911,10 +1860,11 @@ BaseCache::evictBlock(CacheBlk *blk, PacketList &writebacks)
 PacketPtr
 BaseCache::writebackBlk(CacheBlk *blk)
 {
-    gem5_assert(!isReadOnly || writebackClean,
+    gem5_assert(!isReadOnly || writebackClean || blk->hasValidSecTag(),
                 "Writeback from read-only cache");
     assert(blk && blk->isValid() &&
-        (blk->isSet(CacheBlk::DirtyBit) || writebackClean));
+        (blk->isSet(CacheBlk::DirtyBit) || writebackClean ||
+         blk->hasValidSecTag()));
 
     stats.writebacks[Request::wbRequestorId]++;
 
@@ -1948,6 +1898,7 @@ BaseCache::writebackBlk(CacheBlk *blk)
 
     pkt->allocate();
     pkt->setDataFromBlock(blk->data, blkSize);
+    exportSecTagMetadata(pkt, blk);
 
     // When a block is compressed, it must first be decompressed before being
     // sent for writeback.
@@ -1993,6 +1944,7 @@ BaseCache::writecleanBlk(CacheBlk *blk, Request::Flags dest, PacketId id)
 
     pkt->allocate();
     pkt->setDataFromBlock(blk->data, blkSize);
+    exportSecTagMetadata(pkt, blk);
 
     // When a block is compressed, it must first be decompressed before being
     // sent for writeback.
@@ -2045,6 +1997,7 @@ BaseCache::writebackVisitor(CacheBlk &blk)
 
         Packet packet(request, MemCmd::WriteReq);
         packet.dataStatic(blk.data);
+        exportSecTagMetadata(&packet, &blk);
 
         memSidePort.sendFunctional(&packet);
 
@@ -2438,6 +2391,8 @@ BaseCache::CacheStats::CacheStats(BaseCache &c)
     "Total number of passed KLP tag verification."),
     ADD_STAT(tagVeriFailNum, statistics::units::Count::get(),
     "Total number of failed KLP tag verification"),
+    ADD_STAT(klpLockInstallNum, statistics::units::Count::get(),
+    "Retired-load metadata-only lock installations"),
     ADD_STAT(klpStoreInstallNum, statistics::units::Count::get(),
     "Key installations by KLP stores (split fragments counted separately)."),
     ADD_STAT(failCuzofL1DMissNum, statistics::units::Count::get(),
@@ -2562,7 +2517,7 @@ BaseCache::CacheStats::regStats()
 // should writebacks be included here?  prior code was inconsistent...
 #define SUM_NON_DEMAND(s)                                       \
     (cmd[MemCmd::SoftPFReq]->s + cmd[MemCmd::HardPFReq]->s +    \
-     cmd[MemCmd::SoftPFExReq]->s)
+     cmd[MemCmd::SoftPFExReq]->s + cmd[MemCmd::KlpLockReq]->s)
 
     // [klp] {
     failCuzofL1DMissRate.precision(6);

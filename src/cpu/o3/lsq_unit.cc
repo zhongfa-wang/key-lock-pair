@@ -114,32 +114,6 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
 {
     LSQRequest *request = dynamic_cast<LSQRequest *>(pkt->senderState);
     DynInstPtr inst = request->instruction();
-    // [klp] {
-    if (pkt->isKlpRead) {
-        assert(inst->isKlpLoad());
-        assert(pkt->isUnCondiReExe() == request->isUnConditional());
-        panic_if(pkt->getPassSecTagVeri() == gem5::triStateVal::INIT,
-                 "KLP load PC %s returned without a verification result",
-                 inst->pcState());
-    }
-    if (!request->isUnConditional() && pkt->isKlpRead) {
-      // Record one result per completed request, after all split fragments
-      // have been aggregated. Released requests never reach this point.
-      assert(inst->specReqTagVeriResult == gem5::triStateVal::INIT);
-      inst->specReqTagVeriResult = pkt->getPassSecTagVeri();
-      inst->isSpecRespRecvd = true;
-      DPRINTF(KLPDEBUG, "[LSQUnit] Klp resp pkt received. Pass tag veri: %s, inst VA: 0x%x, inst SN:%llu, inst assembly: %s, inst uncondi state: %s, "
-                        "target addr: 0x%x, size: %llu, has data: %s.\n",
-                  pkt->passSecTagVeri()?"True":"False",
-                  inst->pcState().instAddr(),
-                  inst->seqNum,
-                  inst->staticInst->disassemble(inst->pcState().instAddr(),0),
-                  (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False",
-                  pkt->req->getVaddr(),
-                  pkt->getSize(),
-                  pkt->hasData()?"True":"False");
-    }
-    // } [klp]
     // hardware transactional memory
     // sanity check
     if (pkt->isHtmTransactional() && !inst->isSquashed()) {
@@ -195,32 +169,31 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
 
     cpu->ppDataAccessComplete->notify(std::make_pair(inst, pkt));
 
-    // [klp] {
-    /* klp stats */
-    if (pkt->isKlpRead && request->isUnConditional()) {
-      assert(pkt->passSecTagVeri());
-      assert(!inst->statsUpdated[6]);
-      inst->statsUpdated[6] = true;
-      inst->stallCycEnd = cpu->curCycle();
+    // This callback is reached only after every split fragment has returned.
+    // Faults and squash bypass KLP buffering, so normal recovery still wins.
+    if (pkt->isKlpRead && !inst->isSquashed() && inst->fault == NoFault) {
+        const bool passed = validateKlpLoad(inst, request);
+        inst->setPassTagVeriDynInstCarrier(passed ? triStateVal::TRUE :
+                                                  triStateVal::FALSE);
+        if (!inst->isUncondi() &&
+            inst->specReqTagVeriResult == triStateVal::INIT)
+            inst->specReqTagVeriResult = passed ? triStateVal::TRUE :
+                                                triStateVal::FALSE;
+        inst->klpNeedsInstall = !passed &&
+            inst->getIsBaseUnknown() == triStateVal::FALSE;
+        if (!passed && !inst->isUncondi()) {
+            inst->klpDataBuffered = true;
+            inst->statsUpdated[5] = true;
+            inst->stallCycStart = cpu->curCycle();
+            ++stats.klpHeldLoads;
+            DPRINTF(KLPDEBUG, "LQ holds complete load [sn:%llu] key=%#x\n",
+                    inst->seqNum, inst->getSecTagInDynInst());
+            return;
+        }
+    } else if (inst->fault != NoFault || inst->isSquashed()) {
+        inst->klpDataBuffered = false;
+        inst->klpNeedsInstall = false;
     }
-
-    if (pkt->isKlpRead && !request->isUnConditional()) {
-      inst->setPassTagVeriDynInstCarrier(pkt->getPassSecTagVeri());
-      if (!pkt->passSecTagVeri()){
-        /* klp stats */
-        assert(!inst->statsUpdated[5]);
-        inst->statsUpdated[5] = true;
-        inst->stallCycStart = cpu->curCycle();
-
-        DPRINTF(KLPDEBUG, "[LSQUnit] Key veri failed, sending it to commit. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, unconditional state: %s.\n",
-                inst->pcState().instAddr(),
-                inst->seqNum,
-                inst->staticInst->disassemble(inst->pcState().instAddr(),0),
-                (inst->getUncondiState()==gem5::triStateVal::TRUE)?"True":"False");
-        return;
-      }
-    }
-    // } [klp]
 
     assert(!cpu->switchedOut());
     if (!inst->isSquashed()) {
@@ -247,6 +220,202 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
             completeStore(request->instruction()->sqIt);
         }
     }
+}
+
+bool
+LSQUnit::validateKlpLoad(const DynInstPtr &inst, LSQRequest *request)
+{
+    ++stats.klpChecks;
+    if (inst->getIsBaseUnknown() != triStateVal::FALSE) {
+        ++stats.klpUnknownKey;
+        DPRINTF(KLPDEBUG,
+                "LQ check [sn:%llu] pc=%#x passed=0 unknown=1 "
+                "uncondi=%d fragments=%u\n", inst->seqNum,
+                inst->pcState().instAddr(), inst->isUncondi(),
+                request->_packets.size());
+        return false;
+    }
+
+    const uint64_t key = inst->getSecTagInDynInst() & cpu->getWidthMask();
+    bool invalid = false;
+    bool mismatch = false;
+    for (const auto *fragment : request->_packets) {
+        const unsigned granularity = fragment->secTagLineGranularityPkt;
+        const unsigned offset = fragment->getAddr() & ~cacheBlockMask;
+        if (!fragment->hasSecTagLineMetadataPkt || granularity == 0 ||
+            fragment->getSize() == 0) {
+            invalid = true;
+            continue;
+        }
+        const unsigned first = offset / granularity;
+        const unsigned last =
+            (offset + fragment->getSize() - 1) / granularity;
+        for (unsigned i = first; i <= last; ++i) {
+            if (i >= fragment->secTagLineValuesPkt.size() ||
+                i >= fragment->secTagLineValidBitsPkt.size() ||
+                !fragment->secTagLineValidBitsPkt[i]) {
+                invalid = true;
+            } else if ((fragment->secTagLineValuesPkt[i] &
+                        cpu->getWidthMask()) != key) {
+                mismatch = true;
+            }
+        }
+    }
+    if (invalid)
+        ++stats.klpInvalidLock;
+    if (mismatch)
+        ++stats.klpMismatch;
+    if (!invalid && !mismatch)
+        ++stats.klpPassed;
+    DPRINTF(KLPDEBUG,
+            "LQ check [sn:%llu] pc=%#x passed=%d unknown=0 uncondi=%d "
+            "fragments=%u key=%#x invalid=%d mismatch=%d\n",
+            inst->seqNum, inst->pcState().instAddr(), !invalid && !mismatch,
+            inst->isUncondi(), request->_packets.size(), key, invalid, mismatch);
+    return !invalid && !mismatch;
+}
+
+void
+LSQUnit::grantKlpUncondi(const DynInstPtr &inst)
+{
+    if (inst->isSquashed())
+        return;
+    assert(inst->isUncondi());
+    if (inst->klpDataBuffered) {
+        LSQRequest *request = inst->savedRequest;
+        assert(request && request->isComplete());
+        inst->klpDataBuffered = false;
+        inst->statsUpdated[6] = true;
+        inst->stallCycEnd = cpu->curCycle();
+        stats.klpWaitCycles += static_cast<uint64_t>(
+            inst->stallCycEnd - inst->stallCycStart);
+        if (inst->fault != NoFault)
+            inst->klpNeedsInstall = false;
+        ++stats.klpReleasedLoads;
+        DPRINTF(KLPDEBUG, "LQ releases buffered load [sn:%llu]\n",
+                inst->seqNum);
+        // Normal writeback retains fault/ReExec handling. It never copies
+        // buffered bytes into registers if a snoop has already faulted it.
+        writeback(inst, request->mainPacket());
+    } else if (inst->klpStlfBlocked) {
+        inst->klpStlfBlocked = false;
+        inst->klpStlfStoreSeq = 0;
+        ++stats.klpStlfRetries;
+        iewStage->retryKlpLoad(inst);
+    }
+    // Data already requested from cache stays on that path. Authorization
+    // alone must not create a second memory access or change its sender state.
+}
+
+void
+LSQUnit::wakeKlpStlfLoads(InstSeqNum store_seq)
+{
+    for (auto &entry : loadQueue) {
+        const auto &inst = entry.instruction();
+        if (!inst->isSquashed() && inst->klpStlfBlocked &&
+            inst->klpStlfStoreSeq == store_seq) {
+            inst->klpStlfBlocked = false;
+            inst->klpStlfStoreSeq = 0;
+            ++stats.klpStlfRetries;
+            iewStage->retryKlpLoad(inst);
+        }
+    }
+}
+
+void
+LSQUnit::queueKlpInstall(const DynInstPtr &inst, LSQRequest *request)
+{
+    assert(inst->getIsBaseUnknown() == triStateVal::FALSE);
+    assert(inst->isCommitted());
+    assert(inst->isUncondi());
+    assert(request && !request->_reqs.empty());
+    assert(klpInstalls.empty() || klpInstalls.back().seq < inst->seqNum);
+    KlpInstall install;
+    install.seq = inst->seqNum;
+    for (const auto &fragment : request->_reqs) {
+        assert(fragment->hasPaddr());
+        assert(!fragment->isUncacheable() && !fragment->isStrictlyOrdered());
+        Request::Flags flags;
+        if (fragment->isSecure())
+            flags.set(Request::SECURE);
+        auto req = std::make_shared<Request>(fragment->getPaddr(),
+            fragment->getSize(), flags, fragment->requestorId());
+        req->setContext(inst->contextId());
+        req->taskId(fragment->taskId());
+        auto *pkt = new Packet(req, MemCmd::KlpLockReq);
+        pkt->setSecTag(inst->getSecTagInDynInst());
+        pkt->senderState = new KlpLockSenderState(this);
+        install.packets.push_back(pkt);
+    }
+    klpInstalls.push_back(std::move(install));
+    ++stats.klpInstallQueued;
+    cpu->wakeCPU();
+    cpu->activityThisCycle();
+}
+
+bool
+LSQUnit::hasOlderKlpInstall(InstSeqNum seq) const
+{
+    if (!klpInstalls.empty() && klpInstalls.front().seq < seq)
+        return true;
+    // Include the retirement hand-off window: a store conditional/atomic can
+    // become writable during execute, before this cycle consumes doneSeqNum.
+    for (const auto &entry : loadQueue) {
+        const auto &inst = entry.instruction();
+        if (inst->seqNum >= seq)
+            break;
+        if (inst->klpNeedsInstall && !inst->isSquashed() &&
+            inst->fault == NoFault)
+            return true;
+    }
+    return false;
+}
+
+void
+LSQUnit::serviceKlpInstalls()
+{
+    if (klpInstalls.empty())
+        return;
+    auto &install = klpInstalls.front();
+    // Wait for acknowledgement of ALL older stores, not just port acceptance.
+    // A younger hit must not install before an older outstanding miss.
+    if (install.inFlight ||
+        (!storeQueue.empty() &&
+         storeQueue.front().instruction()->seqNum < install.seq))
+        return;
+    if (lsq->cacheBlocked() || !lsq->cachePortAvailable(false))
+        return;
+    PacketPtr pkt = install.packets.front();
+    if (!dcachePort->sendTimingReq(pkt)) {
+        lsq->cacheBlocked(true);
+        ++stats.blockedByCache;
+        return;
+    }
+    install.inFlight = true;
+    lsq->cachePortBusy(false);
+    ++stats.klpInstallSent;
+    DPRINTF(KLPDEBUG, "Sent retired lock install [sn:%llu] addr=%#x\n",
+            install.seq, pkt->getAddr());
+}
+
+void
+LSQUnit::recvKlpLockResp(PacketPtr pkt)
+{
+    assert(!klpInstalls.empty());
+    auto &install = klpInstalls.front();
+    assert(install.inFlight && install.packets.front() == pkt);
+    panic_if(pkt->isError(), "Retired KLP lock installation failed");
+    install.inFlight = false;
+    install.packets.pop_front();
+    delete pkt->senderState;
+    delete pkt;
+    if (install.packets.empty()) {
+        klpInstalls.pop_front();
+        ++stats.klpInstallCompleted;
+        iewStage->updateLSQNextCycle = true;
+    }
+    cpu->wakeCPU();
+    cpu->activityThisCycle();
 }
 
 LSQUnit::LSQUnit(uint32_t lqEntries, uint32_t sqEntries)
@@ -285,6 +454,7 @@ LSQUnit::init(CPU *cpu_ptr, IEW *iew_ptr, const BaseO3CPUParams &params,
 void
 LSQUnit::resetState()
 {
+    assert(klpInstalls.empty());
     storesToWB = 0;
 
     // hardware transactional memory
@@ -315,6 +485,34 @@ LSQUnit::LSQUnitStats::LSQUnitStats(statistics::Group *parent)
     : statistics::Group(parent),
       ADD_STAT(forwLoads, statistics::units::Count::get(),
                "Number of loads that had data forwarded from stores"),
+      ADD_STAT(klpChecks, statistics::units::Count::get(),
+               "Completed cache loads checked in LQ"),
+      ADD_STAT(klpPassed, statistics::units::Count::get(),
+               "LQ checks with every lock matching"),
+      ADD_STAT(klpMismatch, statistics::units::Count::get(),
+               "LQ checks containing a valid mismatching lock"),
+      ADD_STAT(klpUnknownKey, statistics::units::Count::get(),
+               "LQ checks with an unknown key"),
+      ADD_STAT(klpInvalidLock, statistics::units::Count::get(),
+               "LQ checks containing unavailable or invalid locks"),
+      ADD_STAT(klpHeldLoads, statistics::units::Count::get(),
+               "Loads buffering cache data until uncondi"),
+      ADD_STAT(klpReleasedLoads, statistics::units::Count::get(),
+               "Buffered loads released upon uncondi"),
+      ADD_STAT(klpWaitCycles, statistics::units::Count::get(),
+               "Total cycles holding returned data for uncondi"),
+      ADD_STAT(klpStlfBlocked, statistics::units::Count::get(),
+               "STLF attempts blocked by unknown or mismatching keys"),
+      ADD_STAT(klpStlfRetries, statistics::units::Count::get(),
+               "Key-blocked STLF loads woken by uncondi or store completion"),
+      ADD_STAT(klpStlfPassed, statistics::units::Count::get(),
+               "Speculative STLF accesses with matching known keys"),
+      ADD_STAT(klpInstallQueued, statistics::units::Count::get(),
+               "Retired loads queued for lock installation"),
+      ADD_STAT(klpInstallSent, statistics::units::Count::get(),
+               "Lock installation fragments accepted by L1D"),
+      ADD_STAT(klpInstallCompleted, statistics::units::Count::get(),
+               "Retired load lock installations completed"),
       ADD_STAT(squashedLoads, statistics::units::Count::get(),
                "Number of loads squashed"),
       ADD_STAT(ignoredResponses, statistics::units::Count::get(),
@@ -353,6 +551,7 @@ LSQUnit::drainSanityCheck() const
         assert(!loadQueue[i].valid());
 
     assert(storesToWB == 0);
+    assert(klpInstalls.empty());
     assert(!retryPkt);
 }
 
@@ -476,7 +675,7 @@ LSQUnit::numFreeLoadEntries()
 {
         DPRINTF(LSQUnit, "LQ size: %d, #loads occupied: %d\n",
                 loadQueue.capacity(), loadQueue.size());
-        return loadQueue.capacity() - loadQueue.size();
+        return loadQueue.capacity() - loadQueue.size() - klpInstalls.size();
 }
 
 unsigned
@@ -531,6 +730,18 @@ LSQUnit::checkSnoop(PacketPtr pkt)
         if (!ld_inst->effAddrValid() || ld_inst->strictlyOrdered() || !request)
             continue;
 
+        // ROB retirement precedes removal from the LQ by commitToIEWDelay.
+        // An invalidate in that interval must not turn a retired load into
+        // ReExec and thereby cancel its pending metadata installation.
+        if (ld_inst->isCommitted()) {
+            if ((ld_inst->memReqFlags & Request::LLSC) &&
+                request->isCacheBlockHit(invalidate_addr, cacheBlockMask)) {
+                ld_inst->tcBase()->getIsaPtr()->
+                    handleLockedSnoopHit(ld_inst.get());
+            }
+            continue;
+        }
+
         DPRINTF(LSQUnit, "-- inst [sn:%lli] to pktAddr:%#x\n",
                     ld_inst->seqNum, invalidate_addr);
 
@@ -549,6 +760,13 @@ LSQUnit::checkSnoop(PacketPtr pkt)
                 // Mark the load for re-execution
                 ld_inst->fault = std::make_shared<ReExec>();
                 request->setStateToFault();
+                if (ld_inst->klpDataBuffered) {
+                    ld_inst->klpDataBuffered = false;
+                    ld_inst->klpNeedsInstall = false;
+                    // A completed, held response has no later callback to
+                    // deliver this ReExec. Send the fault to commit now.
+                    writeback(ld_inst, request->mainPacket());
+                }
             } else {
                 DPRINTF(LSQUnit, "HitExternal Snoop for addr %#x [sn:%lli]\n",
                         pkt->getAddr(), ld_inst->seqNum);
@@ -804,6 +1022,11 @@ LSQUnit::commitLoad()
                     inst->lastWakeDependents - inst->firstIssue));
     }
 
+    if (inst->klpNeedsInstall && !inst->isSquashed() &&
+        inst->fault == NoFault) {
+        assert(loadQueue.front().hasRequest());
+        queueKlpInstall(inst, loadQueue.front().request());
+    }
     loadQueue.front().clear();
     loadQueue.pop_front();
 }
@@ -849,6 +1072,8 @@ void
 LSQUnit::writebackBlockedStore()
 {
     assert(isStoreBlocked);
+    if (hasOlderKlpInstall(storeWBIt->instruction()->seqNum))
+        return;
     storeWBIt->request()->sendPacketToCache();
     if (storeWBIt->request()->isSent()){
         storePostSend();
@@ -858,6 +1083,7 @@ LSQUnit::writebackBlockedStore()
 void
 LSQUnit::writebackStores()
 {
+    serviceKlpInstalls();
     if (isStoreBlocked) {
         DPRINTF(LSQUnit, "Writing back  blocked store\n");
         writebackBlockedStore();
@@ -875,6 +1101,11 @@ LSQUnit::writebackStores()
                     " is blocked!\n");
             break;
         }
+
+        // An older retired load's metadata write must finish before a
+        // younger store can install another lock (including miss/hit races).
+        if (hasOlderKlpInstall(storeWBIt->instruction()->seqNum))
+            break;
 
         // Store didn't write any data so no need to write it back to
         // memory.
@@ -1024,6 +1255,9 @@ LSQUnit::squash(const InstSeqNum &squashed_num)
         }
         // Clear the smart pointer to make sure it is decremented.
         loadQueue.back().instruction()->setSquashed();
+        loadQueue.back().instruction()->klpDataBuffered = false;
+        loadQueue.back().instruction()->klpNeedsInstall = false;
+        loadQueue.back().instruction()->klpStlfBlocked = false;
         loadQueue.back().clear();
 
         loadQueue.pop_back();
@@ -1217,6 +1451,7 @@ LSQUnit::completeStore(typename StoreQueue::iterator store_idx)
     /* We 'need' a copy here because we may clear the entry from the
      * store queue. */
     DynInstPtr store_inst = store_idx->instruction();
+    wakeKlpStlfLoads(store_inst->seqNum);
     if (store_idx == storeQueue.begin()) {
         do {
             storeQueue.front().clear();
@@ -1343,6 +1578,7 @@ LSQUnit::checkStaleTranslations() const
 void
 LSQUnit::recvRetry()
 {
+    serviceKlpInstalls();
     if (isStoreBlocked) {
         DPRINTF(LSQUnit, "Receiving retry: blocked store\n");
         writebackBlockedStore();
@@ -1393,6 +1629,12 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
     assert(load_inst);
 
     assert(!load_inst->isExecuted());
+
+    if (load_inst->isKlpLoad() && !load_inst->klpKeyGenerated) {
+        load_inst->setSecTagInDynInst(
+            load_inst->staticInst->genSecTag(load_inst.get()));
+        load_inst->klpKeyGenerated = true;
+    }
 
     // Make sure this isn't a strictly ordered load
     // A bit of a hackish way to get strictly ordered accesses to work
@@ -1516,6 +1758,44 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
                   (store_has_upper_limit || lower_load_has_store_part)))) {
 
                 coverage = AddrRangeCoverage::PartialAddrRangeCoverage;
+            }
+
+            if (coverage == AddrRangeCoverage::FullAddrRangeCoverage &&
+                load_inst->isKlpLoad() &&
+                !request->mainReq()->isUncacheable() &&
+                !request->mainReq()->isStrictlyOrdered()) {
+                const auto &store_inst = store_it->instruction();
+                const bool known =
+                    load_inst->getIsBaseUnknown() == triStateVal::FALSE;
+                const bool match = known &&
+                    store_inst->getIsBaseUnknown() == triStateVal::FALSE &&
+                    ((load_inst->getSecTagInDynInst() & cpu->getWidthMask()) ==
+                     (store_inst->getSecTagInDynInst() & cpu->getWidthMask()));
+                DPRINTF(KLPDEBUG,
+                        "LQ STLF [sn:%llu] pc=%#x store_sn=%llu "
+                        "passed=%d unknown=%d uncondi=%d\n",
+                        load_inst->seqNum, load_inst->pcState().instAddr(),
+                        store_inst->seqNum, match, !known,
+                        load_inst->isUncondi());
+                if (!load_inst->isUncondi() && !match) {
+                    // Keep this dependency per load: several loads can wait
+                    // on different stores, independently of partial-STLF.
+                    load_inst->klpStlfBlocked = true;
+                    load_inst->klpStlfStoreSeq = store_inst->seqNum;
+                    ++stats.klpStlfBlocked;
+                    iewStage->rescheduleMemInst(load_inst);
+                    load_inst->clearIssued();
+                    load_inst->effAddrValid(false);
+                    ++stats.rescheduledLoads;
+                    load_entry.setRequest(nullptr);
+                    request->discard();
+                    return NoFault;
+                }
+                load_inst->klpNeedsInstall = known && !match;
+                load_inst->setPassTagVeriDynInstCarrier(
+                    match ? triStateVal::TRUE : triStateVal::FALSE);
+                if (match && !load_inst->isUncondi())
+                    ++stats.klpStlfPassed;
             }
 
             if (coverage == AddrRangeCoverage::FullAddrRangeCoverage) {

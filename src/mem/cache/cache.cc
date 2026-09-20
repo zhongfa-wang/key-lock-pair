@@ -210,7 +210,7 @@ Cache::doWritebacks(PacketList& writebacks, Tick forward_time)
             } else if (wbPkt->cmd == MemCmd::WritebackClean) {
                 // clean writeback, do not send since the block is
                 // still cached above
-                assert(writebackClean);
+                assert(writebackClean || wbPkt->hasSecTagLineMetadataPkt);
                 delete wbPkt;
             } else {
                 assert(wbPkt->cmd == MemCmd::WritebackDirty ||
@@ -414,46 +414,6 @@ Cache::handleTimingReqMiss(PacketPtr pkt, CacheBlk *blk, Tick forward_time,
         // MSHR) this is set to null
         pkt = pf;
     }
-    // [klp] {
-    /* The current implementation protects only L1D. */
-    if (isKlpRequest(pkt)) {
-      /* If the packet is made by a speculative load, response core and make the request to the lower cache.*/
-      if (!pkt->isUnCondiReExe() && pkt->isKlpRead){
-        assert(pkt->needsResponse());
-        assert(pkt->req->hasPaddr());
-        assert(!pkt->req->isUncacheable());
-        stats.tagVeriFailNum++;
-        stats.failCuzofL1DMissNum++;
-        PacketPtr pf = nullptr;
-        /* Make a copy of the pkt for the convenience of the next swpf when MSHR misses. */
-        DPRINTF(KLPDEBUG, "[Cache] L1D miss. Making swpf. Target addr: 0x%x, "
-          "request size: 0x%x.\n",
-          pkt->req->getVaddr(),
-                pkt->getSize());
-        if(!mshr){
-          RequestPtr req = std::make_shared<Request>(pkt->req->getPaddr(),
-                                                  pkt->req->getSize(),
-                                                  pkt->req->getFlags(),
-                                                  pkt->req->requestorId());
-          // Downstream stride prefetchers train on the demand PC. Keep
-          // that metadata without giving this background fetch a KLP key.
-          if (pkt->req->hasPC())
-              req->setPC(pkt->req->getPC());
-          /* The request made to the lower cache is done by a software prefetch. */
-          MemCmd prefetchCmd = MemCmd::SoftPFReq;
-          pf = new Packet(req, prefetchCmd);
-          pf->allocate();
-          assert(pf->matchAddr(pkt));
-          assert(pf->getSize() == pkt->getSize());
-        }
-        pkt->makeTimingResponse();
-        /* Tell the core that the tag verification failed. */
-        pkt->setPassSecTagVeri(gem5::triStateVal::FALSE);
-        cpuSidePort.schedTimingResp(pkt, request_time);
-        pkt = pf;
-      }
-    }
-    // } [klp]
     BaseCache::handleTimingReqMiss(pkt, mshr, blk, forward_time, request_time);
 }
 
@@ -600,6 +560,10 @@ Cache::createMissPacket(PacketPtr cpu_pkt, CacheBlk *blk,
             (force_clean_rsp ? MemCmd::ReadCleanReq : MemCmd::ReadSharedReq);
     }
     PacketPtr pkt = new Packet(cpu_pkt->req, cmd, blkSize);
+    // Preserve clean-snoop metadata through additional miss levels. Memory
+    // supplies bytes but has no backing store for these cache-only locks.
+    if (cpu_pkt->secTagLineFromCleanSnoopPkt)
+        pkt->copySecTagLineMetadataFrom(cpu_pkt);
 
     // if there are upstream caches that have already marked the
     // packet as having sharers (not passing writable), pass that info
@@ -921,6 +885,7 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
                         assert(pkt->getSize() >= tgt_pkt->getSize());
 
                         tgt_pkt->setData(pkt->getConstPtr<uint8_t>());
+                        tgt_pkt->copySecTagLineMetadataFrom(pkt);
                     } else {
                         // MSHR targets can read data either from the
                         // block or the response pkt. If we can't get data
@@ -1010,7 +975,10 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
 PacketPtr
 Cache::evictBlock(CacheBlk *blk)
 {
-    PacketPtr pkt = (blk->isSet(CacheBlk::DirtyBit) || writebackClean) ?
+    // Even an unmodified shared copy can be the last cached lock copy.
+    // Send its metadata down with a clean writeback instead of CleanEvict.
+    PacketPtr pkt = (blk->isSet(CacheBlk::DirtyBit) || writebackClean ||
+                     blk->hasValidSecTag()) ?
         writebackBlk(blk) : cleanEvictBlk(blk);
 
     invalidateBlock(blk);
@@ -1153,6 +1121,10 @@ Cache::handleSnoop(PacketPtr pkt, CacheBlk *blk, bool is_timing,
             // Copy over flags from the snoop response to make sure we
             // inform the final destination
             pkt->copyResponderFlags(&snoopPkt);
+            if (!pkt->cacheResponding() &&
+                snoopPkt.secTagLineFromCleanSnoopPkt) {
+                pkt->copySecTagLineMetadataFrom(&snoopPkt);
+            }
         } else {
             bool already_responded = pkt->cacheResponding();
             cpuSidePort.sendAtomicSnoop(pkt);
@@ -1247,6 +1219,16 @@ Cache::handleSnoop(PacketPtr pkt, CacheBlk *blk, bool is_timing,
         DPRINTF(Cache, "new state is %s\n", blk->print());
     }
 
+    if (!respond && !pkt->cacheResponding() && pkt->isRead() &&
+        blk_valid && blk->hasValidSecTag() &&
+        !pkt->hasSecTagLineMetadataPkt) {
+        // A clean shared copy may outlive the lower-level dirty owner.
+        // Supply only lock metadata, leaving the data responder and normal
+        // MOESI ownership rules unchanged. Snapshot before invalidating.
+        exportSecTagMetadata(pkt, blk);
+        pkt->secTagLineFromCleanSnoopPkt = true;
+    }
+
     if (respond) {
         // prevent anyone else from responding, cache as well as
         // memory, and also prevent any memory from even seeing the
@@ -1274,6 +1256,7 @@ Cache::handleSnoop(PacketPtr pkt, CacheBlk *blk, bool is_timing,
                  "%s is passing a Modified line through %s, "
                  "but keeping the block", name(), pkt->print());
 
+        exportSecTagMetadata(pkt, blk);
         if (is_timing) {
             doTimingSupplyResponse(pkt, blk->data, is_deferred, pending_inval);
         } else {
@@ -1393,6 +1376,16 @@ Cache::recvTimingSnoopReq(PacketPtr pkt)
             wb_pkt->setHasSharers();
         }
 
+        if (!respond && !pkt->cacheResponding() && pkt->isRead() &&
+            !pkt->hasSecTagLineMetadataPkt &&
+            wb_pkt->hasSecTagLineMetadataPkt &&
+            std::any_of(wb_pkt->secTagLineValidBitsPkt.begin(),
+                        wb_pkt->secTagLineValidBitsPkt.end(),
+                        [](bool valid) { return valid; })) {
+            pkt->copySecTagLineMetadataFrom(wb_pkt);
+            pkt->secTagLineFromCleanSnoopPkt = true;
+        }
+
         if (respond) {
             pkt->setCacheResponding();
 
@@ -1400,6 +1393,7 @@ Cache::recvTimingSnoopReq(PacketPtr pkt)
                 pkt->setResponderHadWritable();
             }
 
+            pkt->copySecTagLineMetadataFrom(wb_pkt);
             doTimingSupplyResponse(pkt, wb_pkt->getConstPtr<uint8_t>(),
                                    false, false);
         }

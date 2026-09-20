@@ -51,6 +51,7 @@
 #include <cassert>
 #include <initializer_list>
 #include <list>
+#include <vector>
 
 #include "base/addr_range.hh"
 #include "base/cast.hh"
@@ -153,6 +154,8 @@ class MemCmd
         HTMAbort,
         // Tlb shootdown
         TlbiExtSync,
+        KlpLockReq,
+        KlpLockResp,
         NUM_MEM_CMDS
     };
 
@@ -399,7 +402,54 @@ class Packet : public Printable, public Extensible<Packet>
     /* KLP store carrying the credential of its destination address. */
     bool isKlpWrite = false;
 
-    uint64_t getSecTag() {return secTagInPkt;}
+    // A line snapshot always belongs to the data carried by this packet.
+    // Memory does not store this metadata; a memory fill has no valid locks.
+    bool hasSecTagLineMetadataPkt = false;
+    // A clean snooper may retain the only cached lock after the dirty data
+    // owner wrote back to memory. This is a fallback snapshot, not a claim
+    // to dirty data ownership; an actual cache response always overrides it.
+    bool secTagLineFromCleanSnoopPkt = false;
+    std::vector<uint64_t> secTagLineValuesPkt;
+    std::vector<bool> secTagLineValidBitsPkt;
+    unsigned secTagLineGranularityPkt = 0;
+
+    uint64_t getSecTag() const { return secTagInPkt; }
+    void setSecTag(uint64_t key)
+    {
+        assert(key & (uint64_t{1} << 63));
+        secTagInPkt = key;
+        baseUnknown = gem5::triStateVal::FALSE;
+    }
+    bool isKlpLockInstall() const
+    {
+        return cmd == MemCmd::KlpLockReq || cmd == MemCmd::KlpLockResp;
+    }
+    void clearSecTagLineMetadata()
+    {
+        hasSecTagLineMetadataPkt = false;
+        secTagLineFromCleanSnoopPkt = false;
+        secTagLineValuesPkt.clear();
+        secTagLineValidBitsPkt.clear();
+        secTagLineGranularityPkt = 0;
+    }
+    void copySecTagLineMetadataFrom(const PacketPtr pkt)
+    {
+        hasSecTagLineMetadataPkt = pkt->hasSecTagLineMetadataPkt;
+        secTagLineFromCleanSnoopPkt = pkt->secTagLineFromCleanSnoopPkt;
+        secTagLineValuesPkt = pkt->secTagLineValuesPkt;
+        secTagLineValidBitsPkt = pkt->secTagLineValidBitsPkt;
+        secTagLineGranularityPkt = pkt->secTagLineGranularityPkt;
+    }
+    void copyKlpStateFrom(const PacketPtr pkt)
+    {
+        secTagInPkt = pkt->secTagInPkt;
+        passSecTagVeriPktCarrier = pkt->passSecTagVeriPktCarrier;
+        unCondiStatePkt = pkt->unCondiStatePkt;
+        baseUnknown = pkt->baseUnknown;
+        isKlpRead = pkt->isKlpRead;
+        isKlpWrite = pkt->isKlpWrite;
+        copySecTagLineMetadataFrom(pkt);
+    }
     /* If the pkt is from a speculative load or not. */
     bool isUnCondiReExe() const {return unCondiStatePkt == gem5::triStateVal::TRUE;}
     /* Returns the tag verification result. */
@@ -1001,14 +1051,8 @@ class Packet : public Printable, public Extensible<Packet>
 
         flags.set(pkt->flags & (VALID_ADDR|VALID_SIZE));
 
-        // Keep a copied store's marker and credential together. Fresh
-        // writebacks and cache-line acquisition requests are not KLP stores.
-        if (pkt->isKlpWrite) {
-            isKlpWrite = true;
-            secTagInPkt = pkt->secTagInPkt;
-            baseUnknown = pkt->baseUnknown;
-            unCondiStatePkt = pkt->unCondiStatePkt;
-        }
+        // Packet clones (including timing snoop responses) own their snapshot.
+        copyKlpStateFrom(pkt);
 
         if (pkt->isHtmTransactional())
             setHtmTransactional(pkt->getHtmTransactionUid());

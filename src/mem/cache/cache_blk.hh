@@ -46,6 +46,7 @@
 #ifndef __MEM_CACHE_CACHE_BLK_HH__
 #define __MEM_CACHE_CACHE_BLK_HH__
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -109,7 +110,27 @@ class CacheBlk : public TaggedEntry
     // [klp] {
     uint64_t *secTagPtrInCache = nullptr; // Points to the first lock of the block.
     std::vector<bool> secTagValidBitsInCache;
-    void initSecTagValidBits(uint8_t granuleNum){secTagValidBitsInCache.assign(granuleNum, false);}
+    void initSecTagValidBits(unsigned granuleNum)
+    { secTagValidBitsInCache.assign(granuleNum, false); }
+    // Tag stores may supply an external array. Temporary blocks and tag
+    // implementations without that array use private storage instead.
+    std::vector<uint64_t> privateSecTagValues;
+    void ensureSecTagStorage(unsigned granules)
+    {
+        if (!secTagPtrInCache) {
+            privateSecTagValues.assign(granules, 0);
+            secTagPtrInCache = privateSecTagValues.data();
+            initSecTagValidBits(granules);
+        }
+        assert(secTagValidBitsInCache.size() == granules);
+    }
+    bool hasValidSecTag() const
+    {
+        for (bool valid : secTagValidBitsInCache)
+            if (valid)
+                return true;
+        return false;
+    }
     // } [klp]
 
     /**
@@ -229,6 +250,14 @@ class CacheBlk : public TaggedEntry
         setRefCount(other.getRefCount());
         setSrcRequestorId(other.getSrcRequestorId());
         std::swap(lockList, other.lockList);
+        if (other.secTagPtrInCache) {
+            ensureSecTagStorage(other.secTagValidBitsInCache.size());
+            std::copy_n(other.secTagPtrInCache,
+                        other.secTagValidBitsInCache.size(), secTagPtrInCache);
+            secTagValidBitsInCache = other.secTagValidBitsInCache;
+        } else {
+            invalidateSecTag();
+        }
 
         other.invalidate();
 

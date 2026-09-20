@@ -101,11 +101,6 @@ struct BaseCacheParams;
  */
 class BaseCache : public ClockedObject
 {
-  // [klp] {
-  public:
-    /* Verify if the key in pkt and the lock in  */
-    triStateVal verifySecTagInCache(const PacketPtr pkt);
-  // } [klp]
   protected:
     // [klp] {
     /**
@@ -122,8 +117,10 @@ class BaseCache : public ClockedObject
     const bool klpEnabled;
     const bool klpStoreInstall;
 
-    /** Whether this packet is subject to L1D KLP permission checks. */
-    bool isKlpRequest(const PacketPtr pkt) const;
+    /** Whole-cache snapshots and ownership-protected metadata updates. */
+    void exportSecTagMetadata(PacketPtr pkt, const CacheBlk *blk) const;
+    void importSecTagMetadata(CacheBlk *blk, const PacketPtr pkt);
+    void installSecTag(CacheBlk *blk, const PacketPtr pkt);
     // } [klp]
 
     /**
@@ -1103,6 +1100,7 @@ class BaseCache : public ClockedObject
         statistics::Scalar tagVeriNum;
         statistics::Scalar tagVeriPassNum;
         statistics::Scalar tagVeriFailNum;
+        statistics::Scalar klpLockInstallNum;
         statistics::Scalar klpStoreInstallNum;
         statistics::Scalar failCuzofL1DMissNum;
         statistics::Scalar failCuzofTagMismatchNum;

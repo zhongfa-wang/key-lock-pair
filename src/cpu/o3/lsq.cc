@@ -213,6 +213,13 @@ LSQ::isDrained() const
         drained = false;
     }
 
+    for (const auto &unit : thread) {
+        if (unit.hasPendingKlpInstalls()) {
+            DPRINTF(Drain, "Not drained, KLP metadata writes pending.\n");
+            drained = false;
+        }
+    }
+
     return drained;
 }
 
@@ -236,6 +243,12 @@ LSQ::tick()
 
     usedLoadPorts = 0;
     usedStorePorts = 0;
+}
+
+void
+LSQ::grantKlpUncondi(const DynInstPtr &inst)
+{
+    thread.at(inst->threadNumber).grantKlpUncondi(inst);
 }
 
 bool
@@ -320,7 +333,11 @@ LSQ::commitStores(InstSeqNum &youngest_inst, ThreadID tid)
 void
 LSQ::writebackStores()
 {
-    for (ThreadID tid : *activeThreads) {
+    for (ThreadID tid = 0; tid < numThreads; ++tid) {
+        if (!thread[tid].hasPendingKlpInstalls() &&
+            std::find(activeThreads->begin(), activeThreads->end(), tid) ==
+                activeThreads->end())
+            continue;
         if (numStoresToWB(tid) > 0) {
             DPRINTF(Writeback,"[tid:%i] Writing back stores. %i stores "
                 "available for Writeback.\n", tid, numStoresToWB(tid));
@@ -432,7 +449,11 @@ LSQ::recvReqRetry()
     iewStage->cacheUnblocked();
     cacheBlocked(false);
 
-    for (ThreadID tid : *activeThreads) {
+    for (ThreadID tid = 0; tid < numThreads; ++tid) {
+        if (!thread[tid].hasPendingKlpInstalls() &&
+            std::find(activeThreads->begin(), activeThreads->end(), tid) ==
+                activeThreads->end())
+            continue;
         thread[tid].recvRetry();
     }
 }
@@ -457,6 +478,12 @@ LSQ::recvTimingResp(PacketPtr pkt)
     if (pkt->isError())
         DPRINTF(LSQ, "Got error packet back for address: %#X\n",
                 pkt->getAddr());
+
+    if (auto *state = dynamic_cast<LSQUnit::KlpLockSenderState *>(
+            pkt->senderState)) {
+        state->unit->recvKlpLockResp(pkt);
+        return true;
+    }
 
     LSQRequest *request = dynamic_cast<LSQRequest*>(pkt->senderState);
     panic_if(!request, "Got packet back with unknown sender state\n");
@@ -710,7 +737,7 @@ LSQ::isStalled(ThreadID tid)
 bool
 LSQ::hasStoresToWB()
 {
-    for (ThreadID tid : *activeThreads) {
+    for (ThreadID tid = 0; tid < numThreads; ++tid) {
         if (hasStoresToWB(tid))
             return true;
     }
@@ -733,7 +760,7 @@ LSQ::numStoresToWB(ThreadID tid)
 bool
 LSQ::willWB()
 {
-    for (ThreadID tid : *activeThreads) {
+    for (ThreadID tid = 0; tid < numThreads; ++tid) {
         if (willWB(tid))
             return true;
     }
@@ -788,46 +815,6 @@ LSQ::pushRequest(const DynInstPtr& inst, bool isLoad, uint8_t *data,
     const bool tlbi_cmd = isLoad && (flags & Request::TLBI_CMD);
 
     if (inst->translationStarted()) {
-        // [klp] {
-        if(inst->isReScheduled && !inst->isUncondiLsqreqBuilt
-          && inst->isKlpLoad()){
-          /* Clear the spec lsqreq */
-          inst->savedRequest->_port.loadQueue[inst->lqIdx].setRequest(nullptr);
-          inst->savedRequest->discard();
-          inst->savedRequest = nullptr;
-          /* Build the uncondi lsqreq*/
-          if (htm_cmd || tlbi_cmd) {
-              assert(addr == 0x0lu);
-              assert(size == 8);
-              request = new UnsquashableDirectRequest(&thread[tid], inst, flags);
-          } else if (needs_burst) {
-              request = new SplitDataRequest(&thread[tid], inst, isLoad, addr,
-                      size, flags, data, res);
-          } else {
-              request = new SingleDataRequest(&thread[tid], inst, isLoad, addr,
-                      size, flags, data, res, std::move(amo_op));
-          }
-          assert(request);
-          request->_byteEnable = byte_enable;
-          inst->setRequest();
-          request->taskId(cpu->taskId());
-  
-          // There might be fault from a previous execution attempt if this is
-          // a strictly ordered load
-          inst->getFault() = NoFault;
-  
-          // Port/MSHR retries must reuse this unconditional request.
-          inst->isUncondiLsqreqBuilt = true;
-          request->initiateTranslation();
-          DPRINTF(KLPDEBUG, "[LSQ] Building lsqreq for uncondi insts. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, SecTagVal: 0x%x, uncondi state: %s, target addr: 0x%x.\n",
-                  inst->pcState().instAddr(),
-                  inst->seqNum,
-                  inst->staticInst->disassemble(inst.get()->pcState().instAddr(),0),
-                  inst->getSecTagInDynInst(), 
-                  inst->isUncondi()? "True" : "False",
-                  request->req()->getVaddr());
-        }
-        // } [klp]
         request = inst->savedRequest;
         assert(request);
     } else {
@@ -1180,7 +1167,8 @@ LSQ::LSQRequest::addReq(Addr addr, unsigned size,
 LSQ::LSQRequest::~LSQRequest()
 {
     assert(!isAnyOutstandingRequest());
-    _inst->savedRequest = nullptr;
+    if (_inst->savedRequest == this)
+        _inst->savedRequest = nullptr;
 
     for (auto r: _packets)
         delete r;
@@ -1249,21 +1237,11 @@ LSQ::SplitDataRequest::recvTimingResp(PacketPtr pkt)
         pktIdx++;
     assert(pktIdx < _packets.size());
     numReceivedPackets++;
-    if (pkt->isKlpRead) {
-        panic_if(pkt->getPassSecTagVeri() == gem5::triStateVal::INIT,
-                 "KLP fragment returned without a verification result");
-        if (!pkt->passSecTagVeri())
-            mainPktPassTagVeriState = gem5::triStateVal::FALSE;
-    }
     if (numReceivedPackets == _packets.size()) {
         flags.set(Flag::Complete);
         /* Assemble packets. */
         PacketPtr resp = isLoad() ? createReadPacket(_mainReq)
                                  : Packet::createWrite(_mainReq);
-        if (resp->isKlpRead) {
-            resp->setPassSecTagVeri(mainPktPassTagVeriState);
-            _mainPacket->setPassSecTagVeri(mainPktPassTagVeriState);
-        }
         if (isLoad())
             resp->dataStatic(_inst->memData);
         else
@@ -1283,11 +1261,11 @@ LSQ::LSQRequest::createReadPacket(const RequestPtr &req)
     // the entire access if any fragment requires uncached/ordered handling.
     // LSQUnit::read still enforces the existing at-commit ordering rules.
     const bool klp_read = _inst->isKlpLoad() &&
-        !mainReq()->isUncacheable() && !mainReq()->isStrictlyOrdered();
+        !mainReq()->isUncacheable() && !mainReq()->isStrictlyOrdered() &&
+        !mainReq()->isLocalAccess();
     PacketPtr pkt;
     if (klp_read) {
-        assert(unCondiState == _inst->getUncondiState());
-        pkt = Packet::createRead(req, unCondiState,
+        pkt = Packet::createRead(req, _inst->getUncondiState(),
             _inst->getSecTagInDynInst(), _inst->getIsBaseUnknown());
     } else {
         pkt = Packet::createRead(req);
@@ -1306,7 +1284,6 @@ LSQ::LSQRequest::createWritePacket(const RequestPtr &req)
         _inst->getIsBaseUnknown() == gem5::triStateVal::INIT) {
         return Packet::createWrite(req);
     }
-    assert(unCondiState == _inst->getUncondiState());
     const auto unknown = _inst->getIsBaseUnknown();
     const uint64_t key = unknown == gem5::triStateVal::TRUE ?
         0 : _inst->getSecTagInDynInst();
@@ -1319,7 +1296,6 @@ LSQ::SingleDataRequest::buildPackets()
     /* Retries do not create new packets. */
     if (_packets.size() == 0) {
         // [klp] { 
-        assert(this->unCondiState == instruction()->getUncondiState());
         _packets.push_back(
                 isLoad()
                     ? createReadPacket(req())
@@ -1366,6 +1342,7 @@ LSQ::SplitDataRequest::buildPackets()
         if (isLoad()) {
             _mainPacket = createReadPacket(_mainReq);
             _mainPacket->dataStatic(_inst->memData);
+            _mainPacket->senderState = this;
 
             // hardware transactional memory
             // If request originates in a transaction,
@@ -1385,7 +1362,6 @@ LSQ::SplitDataRequest::buildPackets()
         for (int i = 0; i < _reqs.size() && _fault[i] == NoFault; i++) {
             RequestPtr req = _reqs[i];
             // [klp]
-            assert(this->unCondiState == instruction()->getUncondiState());
             PacketPtr pkt = isLoad() ? createReadPacket(req)
                                      : createWritePacket(req);
             /* DPRINTF(KLPDEBUG, "[LSQ] LSQ building a split sub req. SecTagVal: 0x%x, sub pkt obj addr: 0x%x.\n",
@@ -1613,7 +1589,8 @@ LSQ::DcachePort::recvTimingResp(PacketPtr pkt)
     }
 
     dcachePortStats.numRecvResp++;
-    dcachePortStats.numRecvRespBytes += pkt->getSize();
+    if (!pkt->isKlpLockInstall())
+        dcachePortStats.numRecvRespBytes += pkt->getSize();
 
     return lsq->recvTimingResp(pkt);
 }

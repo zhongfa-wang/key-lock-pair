@@ -241,6 +241,10 @@ MemCmd::commandInfo[] =
     { {IsRead, IsResponse}, InvalidCmd, "HTMReqResp" },
     { {IsRead, IsRequest}, InvalidCmd, "HTMAbort" },
     { {IsRequest}, InvalidCmd, "TlbiExtSync" },
+    // Metadata-only writes acquire ownership through the normal MSHR path.
+    // Deliberately not IsWrite/HasData: no data payload or whole-line merging.
+    { {NeedsWritable, IsRequest, NeedsResponse}, KlpLockResp, "KlpLockReq" },
+    { {IsResponse}, InvalidCmd, "KlpLockResp" },
 };
 
 // [klp] {

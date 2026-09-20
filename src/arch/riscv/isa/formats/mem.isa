@@ -104,8 +104,8 @@ def LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
     name_l = name.lower()
     if 'load' in base_class_l and not 'prefetch' in name_l:
         inst_flags += ('IsKlpLoad',)
-        o3_ea_code = f"//{base_class_l}: Generating security tag for loads!\n" \
-                    + secure_tag_gen_code + ea_code 
+        # Loads generate their credential in the LQ after address generation.
+        o3_ea_code = ea_code
     elif 'store' in base_class_l and not 'cbo' in name_l:
         inst_flags += ('IsKlpStore',)
         o3_ea_code = f"//{base_class_l}: Generating security tag for stores!\n" + \

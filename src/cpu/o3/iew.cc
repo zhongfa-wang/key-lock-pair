@@ -567,6 +567,12 @@ IEW::replayMemInst(const DynInstPtr& inst)
 }
 
 void
+IEW::retryKlpLoad(const DynInstPtr &inst)
+{
+    instQueue.retryKlpLoad(inst);
+}
+
+void
 IEW::blockMemInst(const DynInstPtr& inst)
 {
     instQueue.blockMemInst(inst);
@@ -1466,6 +1472,13 @@ IEW::tick()
 
         checkSignalsAndUpdate(tid);
         dispatch(tid);
+    }
+
+    // Authorization may release an existing response without issuing a
+    // second read, or selectively wake a load blocked by a store key.
+    for (const auto &inst : fromCommit->instsToReExec) {
+        if (inst && !inst->isSquashed())
+            ldstQueue.grantKlpUncondi(inst);
     }
 
     if (exeStatus != Squashing) {

@@ -386,21 +386,43 @@ MemDepUnit::reschedule(const DynInstPtr &inst)
 void
 MemDepUnit::replay()
 {
-    DynInstPtr temp_inst;
-
-    // For now this replay function replays all waiting memory ops.
-    while (!instsToReplay.empty()) {
-        temp_inst = instsToReplay.front();
-
-        MemDepEntryPtr inst_entry = findInHash(temp_inst);
-
-        DPRINTF(MemDepUnit, "Replaying mem instruction PC %s [sn:%lli].\n",
-                temp_inst->pcState(), temp_inst->seqNum);
-
-        moveToReady(inst_entry);
-
-        instsToReplay.pop_front();
+    // Generic partial-forwarding/ordered-load wakeups must not reissue a
+    // key-blocked load; only its store completion or uncondi transition can
+    // remove that dependency. In particular, do not enqueue it twice when
+    // those events coincide with an unrelated store's completion.
+    for (auto it = instsToReplay.begin(); it != instsToReplay.end();) {
+        const DynInstPtr inst = *it;
+        if (inst->klpStlfBlocked) {
+            ++it;
+            continue;
+        }
+        auto entry = findInHash(inst);
+        moveToReady(entry);
+        it = instsToReplay.erase(it);
     }
+}
+
+bool
+MemDepUnit::replay(const DynInstPtr &inst)
+{
+    if (inst->isSquashed())
+        return false;
+    bool waiting = false;
+    for (auto it = instsToReplay.begin(); it != instsToReplay.end();) {
+        if (*it == inst) {
+            waiting = true;
+            it = instsToReplay.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (!waiting)
+        return false;
+    auto entry = memDepHash.find(inst->seqNum);
+    if (entry == memDepHash.end() || entry->second->squashed)
+        return false;
+    moveToReady(entry->second);
+    return true;
 }
 
 void

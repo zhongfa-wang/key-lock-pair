@@ -167,6 +167,9 @@ Base::StatGroup::StatGroup(statistics::Group *parent)
 bool
 Base::observeAccess(const PacketPtr &pkt, bool miss, bool prefetched) const
 {
+    // Installing a retired load's permission is not a new data access.
+    if (pkt->isKlpLockInstall())
+        return false;
     bool fetch = pkt->req->isInstFetch();
     bool read = pkt->isRead();
     bool inv = pkt->isInvalidate();

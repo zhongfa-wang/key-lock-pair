@@ -906,7 +906,7 @@ Commit::resolveInstsByThreatModel()
     if (!cpu->isKlpEnabled())
         return;
 
-    // A rejected load cannot become commit-ready until it is replayed.
+    // A KLP-blocked load cannot become commit-ready until it is authorized.
     // Do not use getCommittingThread(), whose SMT policies require a ready
     // ROB head. Select one eligible thread per cycle without disturbing
     // the normal commit policy, preserving the shared commitWidth budget.
@@ -1351,9 +1351,8 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
         ++stats.tagVeriIncorrectNum;
        }
     if(head_inst->isKlpLoad() &&
-       head_inst->specReqTagVeriResult == gem5::triStateVal::FALSE){
-        assert(head_inst->statsUpdated[5]);
-        assert(head_inst->statsUpdated[6]);
+       head_inst->specReqTagVeriResult == gem5::triStateVal::FALSE &&
+       head_inst->statsUpdated[5] && head_inst->statsUpdated[6]){
         stats.stallCycSum += static_cast<uint64_t>(head_inst->stallCycEnd - head_inst->stallCycStart);
        }
     // } [klp]

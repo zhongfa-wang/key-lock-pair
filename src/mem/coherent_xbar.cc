@@ -198,6 +198,10 @@ CoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
 
     const bool snoop_caches = !system->bypassCaches() &&
         pkt->cmd != MemCmd::WriteClean;
+    // A failed send has not ordered a read. Do not retain locks sampled
+    // by this attempt when a later retry may observe a different version.
+    Packet metadata_before_snoop(pkt->req, pkt->cmd);
+    metadata_before_snoop.copySecTagLineMetadataFrom(pkt);
     if (snoop_caches) {
         assert(pkt->snoopDelay == 0);
 
@@ -312,8 +316,9 @@ CoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
         // express snoops should never be forced to retry
         assert(!is_express_snoop);
 
-        // restore the header delay
+        // restore both timing and pre-attempt metadata
         pkt->headerDelay = old_header_delay;
+        pkt->copySecTagLineMetadataFrom(&metadata_before_snoop);
 
         DPRINTF(CoherentXBar, "%s: src %s packet %s RETRY\n", __func__,
                 src_port->name(), pkt->print());

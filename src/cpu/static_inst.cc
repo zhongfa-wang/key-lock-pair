@@ -152,26 +152,20 @@ StaticInst::genSecTag(ExecContext *xc) const
     const CredentialDecision decision = decideCredential(prov);
 
     /*
-     * genSecTag() 当前只被 O3 EA code 调用。
+     * genSecTag() 由 O3 的 LQ（load）或 EA code（store）调用。
      * DynInst 仅用于统计和调试，不参与 provenance 提取。
      */
     auto *inst = dynamic_cast<gem5::o3::DynInst *>(xc);
     assert(inst != nullptr);
 
-    /*
-     * 必须在每一次 EA 执行时覆盖旧状态。
-     *
-     * 这也处理同一 DynInst 被重新执行的情况，不能只在
-     * DynInst 构造时初始化。
-     */
+    // The LQ generates a load key once per dynamic execution attempt.
+    // Authorization can precede key generation, so uncondi loads count too.
+    // Stores continue to generate their credential during address generation.
     if (!decision.allowSpeculation) {
         xc->setIsBaseUnknown(gem5::triStateVal::TRUE);
 
-        /*
-         * 只统计第一次 speculative execution。
-         * unconditional replay 不重复统计。
-         */
-        if (!inst->isUncondi()) {
+        // klpKeyGenerated prevents port/STLF retries from counting twice.
+        if (inst->isKlpLoad() || !inst->isUncondi()) {
             ++cpu->getBaseStats().numBaseUnKnown;
             ++cpu->getBaseStats().numBaseSum;
         }
@@ -185,14 +179,14 @@ StaticInst::genSecTag(ExecContext *xc) const
 
         /*
          * 0 只表示 packet 没有合法 security tag。
-         * cache 必须通过 isBaseUnknown 区分这种情况。
+         * LQ 必须通过 isBaseUnknown 区分这种情况。
          */
         return 0;
     }
 
     xc->setIsBaseUnknown(gem5::triStateVal::FALSE);
 
-    if (!inst->isUncondi()) {
+    if (inst->isKlpLoad() || !inst->isUncondi()) {
         ++cpu->getBaseStats().numBaseKnown;
         ++cpu->getBaseStats().numBaseSum;
     }

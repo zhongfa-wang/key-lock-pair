@@ -128,94 +128,42 @@ ROB::name() const
     return cpu->name() + ".rob";
 }
 
-// [klp] {
-bool 
-ROB::updateInstsToReExec(std::vector<DynInstPtr>& instsToReExec, 
-                        DynInstPtr head_inst, ThreadID tid, 
-                        std::string getParaThreatModel,
-                        unsigned commitWidth){
-  bool wroteToTimeBuffer = false;
-  instsToReExec.clear();
+// KLP authorization is independent of whether a memory request has issued.
+// The historical time-buffer name remains, but these are authorization
+// notifications: a load with buffered data must never be reexecuted here.
+bool
+ROB::updateInstsToReExec(std::vector<DynInstPtr>& authorized,
+                        DynInstPtr head_inst, ThreadID tid,
+                        std::string threat_model, unsigned commitWidth)
+{
+    authorized.clear();
+    assert(instList[tid].empty() || instList[tid].front() == head_inst);
+    if (!commitWidth || instList[tid].empty())
+        return false;
 
-  if(cpu->getParaThreatModel() == std::string("spectre")){
-    unsigned resolvedNum = 0;
-    // A matching predicted PC is not proof that a branch has executed.
-    // Do not authorize younger loads across an unresolved head branch.
-    if (head_inst->isControl() && !head_inst->isExecuted()) {
-      DPRINTF(KLPDEBUG, "[ROB] Waiting for head branch resolution. SN:%llu\n",
-              head_inst->seqNum);
-      return false;
-    }
-    if(!head_inst->mispredicted()){
-      #include <algorithm>
-      if(threadEntries[tid] != 0){
-        InstIt it = std::find(instList[tid].begin(), instList[tid].end(), head_inst);
-        if(it == instList[tid].end()){
-          return false;
+    const bool futuristic = threat_model == "futuristic";
+    if (!futuristic && threat_model != "spectre")
+        return false;
+
+    for (const auto &inst : instList[tid]) {
+        // Even an executed, correctly predicted branch is still older until
+        // retireHead removes it from this list.
+        if (inst->isControl())
+            break;
+        if (inst->isKlpLoad() && !inst->isSquashed() &&
+            !inst->isUncondi() && !inst->isExecuted() &&
+            inst->getFault() == NoFault &&
+            !inst->isNonSpeculative() && !inst->isSerializing()) {
+            inst->setUncondiState(gem5::triStateVal::TRUE);
+            authorized.push_back(inst);
         }
-
-        if(it->get()->isControl())
-          ++it;
-
-        for( ; it != instList[tid].end(); ++it){
-          if(it->get()->isControl()) break;
-          if(resolvedNum >= commitWidth) break;
-          
-          if( it->get()->isKlpLoad() && 
-              it->get()->getPassTagVeriDynInstCarrier() == gem5::triStateVal::FALSE && 
-              it->get()->isSpecRespRecvd &&
-             !it->get()->isReScheduled && 
-             !it->get()->isSquashed() &&
-             !it->get()->isUncondi() &&
-             !it->get()->isNonSpeculative() &&
-             !it->get()->isSerializing()){
-    
-            it->get()->setUncondiState(gem5::triStateVal::TRUE);
-            it->get()->setPassTagVeriDynInstCarrier(gem5::triStateVal::INIT);
-            instsToReExec.push_back(it->get());
-            ++resolvedNum;
-            wroteToTimeBuffer = true;
-            DPRINTF(KLPDEBUG,"[ROB] Adding insts in ROB to re execution list. Inst VA: 0x%x, inst SN:%llu, inst assembly: %s, unconditional state: %s.\n",
-                    it->get()->pcState().instAddr(),
-                    it->get()->seqNum,
-                    it->get()->staticInst->disassemble(it->get()->pcState().instAddr(),0),
-                    it->get()->getUncondiState()==gem5::triStateVal::TRUE? "True":"False");
-          }
-        }
-      }
+        // Futuristic grants only at the actual ROB head, not to the next
+        // commitWidth positions behind an instruction which cannot retire.
+        if (futuristic || authorized.size() == commitWidth)
+            break;
     }
-  }
-  if(cpu->getParaThreatModel() == std::string("futuristic")){
-    unsigned resolvedNum = 0;
-    for(auto it=instList[tid].begin() ; 
-        it!=instList[tid].end() && resolvedNum < commitWidth;
-        ++it){
-
-      if(it->get()->isControl())
-        break;
-
-      if( it->get()->isKlpLoad() && 
-          it->get()->getPassTagVeriDynInstCarrier() == gem5::triStateVal::FALSE && 
-          it->get()->isSpecRespRecvd &&
-         !it->get()->isReScheduled && 
-         !it->get()->isSquashed() &&
-         !it->get()->isUncondi() &&
-         !it->get()->isNonSpeculative() &&
-         !it->get()->isSerializing()){
-
-        it->get()->setUncondiState(gem5::triStateVal::TRUE);
-        it->get()->setPassTagVeriDynInstCarrier(gem5::triStateVal::INIT);
-        instsToReExec.push_back(it->get());
-        wroteToTimeBuffer = true;
-      }
-      
-      ++resolvedNum;
-    }
-  }
-
-  return wroteToTimeBuffer;
+    return !authorized.empty();
 }
-// } [klp]
 
 void
 ROB::setActiveThreads(std::list<ThreadID> *at_ptr)

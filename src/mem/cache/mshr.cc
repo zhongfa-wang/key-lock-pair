@@ -429,7 +429,27 @@ MSHR::handleSnoop(PacketPtr pkt, Counter _order)
              "%s got snoop %s where needsWritable, "
              "does not match isInvalidate", name(), pkt->print());
 
-    if (!inService || (pkt->isExpressSnoop() && downstreamPending)) {
+    const bool snoop_precedes_request =
+        !inService || (pkt->isExpressSnoop() && downstreamPending);
+    if (pkt->isInvalidate() || pkt->req->isCacheInvalidate() ||
+        (snoop_precedes_request && pkt->isRead())) {
+        // A preceding read can obtain Exclusive permission while we are
+        // still pending, then change its lock without another snoop. Such
+        // a request must discard a buffered hint just like an invalidation.
+        // Clearing the stored target also covers deferred/reissued reads.
+        // An already-issued response keeps its own snapshot, matching the
+        // bytes ordered before this snoop.
+        for (auto &target : targets) {
+            if (target.pkt->secTagLineFromCleanSnoopPkt)
+                target.pkt->clearSecTagLineMetadata();
+        }
+        for (auto &target : deferredTargets) {
+            if (target.pkt->secTagLineFromCleanSnoopPkt)
+                target.pkt->clearSecTagLineMetadata();
+        }
+    }
+
+    if (snoop_precedes_request) {
         // Request has not been issued yet, or it's been issued
         // locally but is buffered unissued at some downstream cache
         // which is forwarding us this snoop.  Either way, the packet

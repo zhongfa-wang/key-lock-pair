@@ -178,6 +178,7 @@ class IEW
 
     /** Re-executes all rescheduled memory instructions. */
     void replayMemInst(const DynInstPtr &inst);
+    void retryKlpLoad(const DynInstPtr &inst);
 
     /** Moves memory instruction onto the list of cache blocked instructions */
     void blockMemInst(const DynInstPtr &inst);

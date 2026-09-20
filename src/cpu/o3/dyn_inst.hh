@@ -375,14 +375,13 @@ class DynInst : public ExecContext, public RefCounted
     /* Stats related */
     Cycles stallCycStart = Cycles(0);
     Cycles stallCycEnd = Cycles(0);
-    /* The flag indicating that the inst should be executed unconditionally.
-    Used in commit stage in case of repeatedly sending an inst to IEW.*/
-    bool isReScheduled = false;
-    /* The requests are managed as in-order in klp. An uncondition request is made
-    (if needed) only after the speculative response is received. */
-    bool isSpecRespRecvd = false;
-    /*  */
-    bool isUncondiLsqreqBuilt = false;
+    // LQ validation state belongs to this execution attempt. Data and lock
+    // snapshots remain owned by savedRequest until writeback or squash.
+    bool klpKeyGenerated = false;
+    bool klpDataBuffered = false;
+    bool klpNeedsInstall = false;
+    bool klpStlfBlocked = false;
+    InstSeqNum klpStlfStoreSeq = 0;
 
     triStateVal getPassTagVeriDynInstCarrier() const {return passTagVeriDynInstCarrier;}
     void setPassTagVeriDynInstCarrier(triStateVal veriResult) {passTagVeriDynInstCarrier = veriResult;}

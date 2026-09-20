@@ -143,6 +143,9 @@ class MemDepUnit
      */
     void replay();
 
+    /** Replay exactly one rescheduled KLP load, once. */
+    bool replay(const DynInstPtr &inst);
+
     /** Notifies completion of an instruction. */
     void completeInst(const DynInstPtr &inst);
 

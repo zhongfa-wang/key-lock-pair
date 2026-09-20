@@ -660,10 +660,6 @@ class LSQ
         uint32_t numReceivedPackets;
         RequestPtr _mainReq;
         PacketPtr _mainPacket;
-        // [klp] {
-        /* Indicating whether all sub pkts pass the tag verification.*/
-        triStateVal mainPktPassTagVeriState = gem5::triStateVal::TRUE;
-        // } [klp]
 
       public:
         SplitDataRequest(LSQUnit* port, const DynInstPtr& inst,
@@ -727,6 +723,9 @@ class LSQ
 
     /** Ticks the LSQ. */
     void tick();
+
+    /** Release buffered KLP data or wake a key-blocked STLF attempt. */
+    void grantKlpUncondi(const DynInstPtr &inst);
 
     /** Inserts a load into the LSQ. */
     void insertLoad(const DynInstPtr &load_inst);

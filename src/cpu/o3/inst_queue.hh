@@ -249,6 +249,7 @@ class InstructionQueue
 
     /** Replays a memory instruction. It must be rescheduled first. */
     void replayMemInst(const DynInstPtr &replay_inst);
+    void retryKlpLoad(const DynInstPtr &inst);
 
     /**
      * Defers a memory instruction when its DTB translation incurs a hw
