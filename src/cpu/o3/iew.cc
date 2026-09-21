@@ -276,6 +276,8 @@ IEW::startupStage()
 void
 IEW::clearStates(ThreadID tid)
 {
+    commitSquashSeqNum[tid] = 0;
+
     toRename->iewInfo[tid].usedIQ = true;
     toRename->iewInfo[tid].freeIQEntries =
         instQueue.numFreeEntries(tid);
@@ -420,6 +422,7 @@ IEW::takeOverFrom()
     for (ThreadID tid = 0; tid < numThreads; tid++) {
         dispatchStatus[tid] = Running;
         fetchRedirect[tid] = false;
+        commitSquashSeqNum[tid] = 0;
     }
 
     updateLSQNextCycle = false;
@@ -433,6 +436,8 @@ void
 IEW::squash(ThreadID tid)
 {
     DPRINTF(IEW, "[tid:%i] Squashing all instructions.\n", tid);
+
+    commitSquashSeqNum[tid] = fromCommit->commitInfo[tid].doneSeqNum;
 
     // Tell the IQ to start squashing.
     instQueue.squash(tid);
@@ -464,9 +469,33 @@ IEW::squash(ThreadID tid)
     emptyRenameInsts(tid);
 }
 
+bool
+IEW::squashSourceDiscarded(const DynInstPtr &inst, ThreadID tid)
+{
+    if (inst->isSquashed())
+        return true;
+
+    // The ROB marks instructions incrementally. An already-issued wrong-path
+    // instruction can therefore execute before its isSquashed flag is set.
+    // Such a notification will be rejected by Commit and must not establish
+    // a KLP boundary that no later LSQ squash will acknowledge.
+    const auto &info = fromCommit->commitInfo[tid];
+    // Asynchronous load completion can arrive before IEW::squash has recorded
+    // this cycle's boundary, so use the incoming boundary when available.
+    if (info.squash)
+        return inst->seqNum > info.doneSeqNum;
+    return info.robSquashing && inst->seqNum > commitSquashSeqNum[tid];
+}
+
 void
 IEW::squashDueToBranch(const DynInstPtr& inst, ThreadID tid)
 {
+    if (squashSourceDiscarded(inst, tid)) {
+        DPRINTF(IEW, "[tid:%i] Ignoring discarded branch squash source "
+                "[sn:%llu].\n", tid, inst->seqNum);
+        return;
+    }
+
     DPRINTF(IEW, "[tid:%i] [sn:%llu] Squashing from a specific instruction,"
             " PC: %s "
             "\n", tid, inst->seqNum, inst->pcState() );
@@ -475,6 +504,7 @@ IEW::squashDueToBranch(const DynInstPtr& inst, ThreadID tid)
             inst->seqNum < toCommit->squashedSeqNum[tid]) {
         toCommit->squash[tid] = true;
         toCommit->squashedSeqNum[tid] = inst->seqNum;
+        ldstQueue.noteKlpSquash(inst->seqNum, tid);
         toCommit->branchTaken[tid] = inst->pcState().branching();
 
         set(toCommit->pc[tid], inst->pcState());
@@ -491,6 +521,12 @@ IEW::squashDueToBranch(const DynInstPtr& inst, ThreadID tid)
 void
 IEW::squashDueToMemOrder(const DynInstPtr& inst, ThreadID tid)
 {
+    if (squashSourceDiscarded(inst, tid)) {
+        DPRINTF(IEW, "[tid:%i] Ignoring discarded memory-order squash source "
+                "[sn:%llu].\n", tid, inst->seqNum);
+        return;
+    }
+
     DPRINTF(IEW, "[tid:%i] Memory violation, squashing violator and younger "
             "insts, PC: %s [sn:%llu].\n", tid, inst->pcState(), inst->seqNum);
     // Need to include inst->seqNum in the following comparison to cover the
@@ -504,6 +540,7 @@ IEW::squashDueToMemOrder(const DynInstPtr& inst, ThreadID tid)
         toCommit->squash[tid] = true;
 
         toCommit->squashedSeqNum[tid] = inst->seqNum;
+        ldstQueue.noteKlpSquash(inst->seqNum - 1, tid);
         set(toCommit->pc[tid], inst->pcState());
         toCommit->mispredictInst[tid] = NULL;
 
@@ -588,6 +625,24 @@ void
 IEW::cacheUnblocked()
 {
     instQueue.cacheUnblocked();
+}
+
+bool
+IEW::prepareKlpWriteback()
+{
+    // A retirement event can release the entire LQ. Admit only into the
+    // current slot, leaving future slots for normal pipeline completions.
+    // Explicitly select a contiguous free entry: the CPU tick may just have
+    // advanced the buffer while the old writeback cursor still names a slot
+    // used before that advance.
+    for (unsigned i = 0; i < wbWidth; ++i) {
+        if (!(*iewQueue)[0].insts[i]) {
+            wbCycle = 0;
+            wbNumInst = i;
+            return true;
+        }
+    }
+    return false;
 }
 
 void
@@ -1523,6 +1578,9 @@ IEW::tick()
             ldstQueue.commitStores(fromCommit->commitInfo[tid].doneSeqNum,tid);
 
             ldstQueue.commitLoads(fromCommit->commitInfo[tid].doneSeqNum,tid);
+
+            // Both retirement walks contribute to one program-ordered batch.
+            ldstQueue.processKlpInstallEvents(tid);
 
             updateLSQNextCycle = true;
             instQueue.commit(fromCommit->commitInfo[tid].doneSeqNum,tid);

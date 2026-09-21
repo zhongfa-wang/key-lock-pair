@@ -192,6 +192,10 @@ class IEW
     /** Sends an instruction to commit through the time buffer. */
     void instToCommit(const DynInstPtr &inst);
 
+    /** Admit deferred KLP completions only into the current broadcast slot. */
+    bool prepareKlpWriteback();
+
+
     /** Inserts unused instructions of a thread into the skid buffer. */
     void skidInsert(ThreadID tid);
 
@@ -241,6 +245,9 @@ class IEW
     }
 
   private:
+    /** Whether Commit has already discarded a squash notification's source. */
+    bool squashSourceDiscarded(const DynInstPtr &inst, ThreadID tid);
+
     /** Sends commit proper information for a squash due to a branch
      * mispredict.
      */
@@ -371,6 +378,9 @@ class IEW
   private:
     /** Records if there is a fetch redirect on this cycle for each thread. */
     bool fetchRedirect[MaxThreads];
+
+    /** Last accepted Commit squash boundary, valid while ROB is squashing. */
+    InstSeqNum commitSquashSeqNum[MaxThreads] = {};
 
     /** Records if the queues have been changed (inserted or issued insts),
      * so that IEW knows to broadcast the updated amount of free entries.

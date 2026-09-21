@@ -142,6 +142,11 @@ class BaseO3CPU(BaseCPU):
 
     LQEntries = Param.Unsigned(32, "Number of load queue entries")
     SQEntries = Param.Unsigned(32, "Number of store queue entries")
+    klp_store_install = Param.Bool(
+        False,
+        "Revalidate younger loads on committed store lock installation; "
+        "must match the L1D klp_store_install setting",
+    )
     LSQDepCheckShift = Param.Unsigned(
         4, "Number of places to shift addr before check"
     )

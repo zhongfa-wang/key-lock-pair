@@ -218,6 +218,10 @@ LSQ::isDrained() const
             DPRINTF(Drain, "Not drained, KLP metadata writes pending.\n");
             drained = false;
         }
+        if (unit.hasPendingKlpWritebacks()) {
+            DPRINTF(Drain, "Not drained, KLP writeback events pending.\n");
+            drained = false;
+        }
     }
 
     return drained;
@@ -243,6 +247,18 @@ LSQ::tick()
 
     usedLoadPorts = 0;
     usedStorePorts = 0;
+}
+
+void
+LSQ::processKlpInstallEvents(ThreadID tid)
+{
+    thread.at(tid).processKlpInstallEvents();
+}
+
+void
+LSQ::noteKlpSquash(InstSeqNum after, ThreadID tid)
+{
+    thread.at(tid).noteKlpSquash(after);
 }
 
 void

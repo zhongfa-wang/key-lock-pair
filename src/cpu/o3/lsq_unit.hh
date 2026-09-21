@@ -46,6 +46,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <limits>
 #include <memory>
 #include <queue>
 
@@ -284,6 +285,9 @@ class LSQUnit
 
     /** Release buffered data, or wake a key-blocked STLF, upon authorization. */
     void grantKlpUncondi(const DynInstPtr &inst);
+    void processKlpInstallEvents();
+    void noteKlpSquash(InstSeqNum after);
+
 
     /** Retired metadata writes have no dependency on an LQ entry's lifetime. */
     struct KlpLockSenderState : public Packet::SenderState
@@ -293,6 +297,7 @@ class LSQUnit
     };
     void recvKlpLockResp(PacketPtr pkt);
     bool hasPendingKlpInstalls() const { return !klpInstalls.empty(); }
+    bool hasPendingKlpWritebacks() const { return klpPendingWritebacks != 0; }
     unsigned numPendingKlpInstalls() const { return klpInstalls.size(); }
 
     /** Squashes all instructions younger than a specific sequence number. */
@@ -339,7 +344,8 @@ class LSQUnit
 
     /** Returns if both the LQ and SQ are empty. */
     bool isEmpty() const
-    { return lqEmpty() && sqEmpty() && klpInstalls.empty(); }
+    { return lqEmpty() && sqEmpty() && klpInstalls.empty() &&
+             !hasPendingKlpWritebacks(); }
 
     /** Returns if the LQ is full. */
     bool lqFull()
@@ -392,7 +398,31 @@ class LSQUnit
     void serviceKlpInstalls();
     bool hasOlderKlpInstall(InstSeqNum seq) const;
     void wakeKlpStlfLoads(InstSeqNum store_seq);
-    bool validateKlpLoad(const DynInstPtr &inst, LSQRequest *request);
+
+    struct KlpInstallEvent
+    {
+        struct Range { Addr addr; unsigned size; bool secure; };
+        InstSeqNum seq;
+        uint64_t key;
+        std::vector<Range> ranges;
+        // Null for load installs. SQ entries stay alive throughout the batch.
+        SQEntry *store = nullptr;
+    };
+    std::vector<KlpInstallEvent> klpInstallEvents;
+    bool klpStoreInstall = false;
+    unsigned klpPendingWritebacks = 0;
+    InstSeqNum klpSquashAfter = std::numeric_limits<InstSeqNum>::max();
+    void queueKlpInstallEvent(const DynInstPtr &inst, LSQRequest *request,
+                              SQEntry *store = nullptr);
+    bool klpEventTarget(const DynInstPtr &inst, LSQRequest *request) const;
+    bool klpStoreCanForward(const KlpInstallEvent &event,
+                           const DynInstPtr &load, LSQRequest *request);
+    void finishKlpWait(const DynInstPtr &inst);
+    void writebackKlpData(const DynInstPtr &inst, LSQRequest *request,
+                          bool defer_writeback = false);
+    bool validateKlpLoad(const DynInstPtr &inst, LSQRequest *request,
+                         bool recheck = false);
+
 
     /** Reset the LSQ state */
     void resetState();
@@ -444,7 +474,7 @@ class LSQUnit
       public:
         /** Constructs a writeback event. */
         WritebackEvent(const DynInstPtr &_inst, PacketPtr pkt,
-                LSQUnit *lsq_ptr);
+                LSQUnit *lsq_ptr, bool klp_deferred = false);
 
         /** Processes the writeback event. */
         void process();
@@ -461,6 +491,7 @@ class LSQUnit
 
         /** The pointer to the LSQ unit that issued the store. */
         LSQUnit *lsqPtr;
+        const bool klpDeferred;
     };
 
   public:
@@ -560,6 +591,17 @@ class LSQUnit
         statistics::Scalar klpInstallQueued;
         statistics::Scalar klpInstallSent;
         statistics::Scalar klpInstallCompleted;
+        statistics::Scalar klpLoadInstallEvents;
+        statistics::Scalar klpStoreInstallEvents;
+        statistics::Scalar klpEventLoadMatches;
+        statistics::Scalar klpEventDeferred;
+        statistics::Scalar klpRechecks;
+        statistics::Scalar klpRecheckPassed;
+        statistics::Scalar klpRecheckFailed;
+        statistics::Scalar klpEventReleasedLoads;
+        statistics::Scalar klpEventStoreForwards;
+        statistics::Scalar klpWritebackRetries;
+
 
         /** Total number of squashed loads. */
         statistics::Scalar squashedLoads;

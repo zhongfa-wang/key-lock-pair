@@ -30,6 +30,8 @@ import sys
 
 Import('*')
 
+GTest('klp_lock_view.test', 'klp_lock_view.test.cc')
+
 if env['CONF']['BUILD_ISA']:
     SimObject('FUPool.py', sim_objects=['FUPool'])
     SimObject('FuncUnitConfig.py', sim_objects=[])

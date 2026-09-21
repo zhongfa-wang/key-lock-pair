@@ -56,6 +56,7 @@
 #include "base/types.hh"
 #include "cpu/inst_seq.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
+#include "cpu/o3/klp_lock_view.hh"
 #include "cpu/utils.hh"
 #include "enums/SMTQueuePolicy.hh"
 #include "mem/port.hh"
@@ -288,6 +289,12 @@ class LSQ
         uint32_t _numOutstandingPackets;
         AtomicOpFunctorPtr _amo_op;
         bool _hasStaleTranslation;
+        // Scoped to this request attempt: never inherited by an IQ replay.
+        KlpLockView klpLockView;
+        std::vector<uint8_t> klpForwardData;
+        bool klpResultDelivered = false;
+        bool klpEventTouched = false;
+
         // [klp] {
         /* Install the uncondi request in LQ.
         Only loads are distinguished as uncondi. */
@@ -567,7 +574,9 @@ class LSQ
         {
             assert(_numOutstandingPackets > 0);
             _numOutstandingPackets--;
-            if (_numOutstandingPackets == 0 && isReleased())
+            // A detached request can still be pinned by a WritebackEvent.
+            // Receiving its last cache reply is not sufficient to free it.
+            if (isReleased() && !isAnyOutstandingRequest())
                 delete this;
         }
 
@@ -726,6 +735,9 @@ class LSQ
 
     /** Release buffered KLP data or wake a key-blocked STLF attempt. */
     void grantKlpUncondi(const DynInstPtr &inst);
+    void processKlpInstallEvents(ThreadID tid);
+    void noteKlpSquash(InstSeqNum after, ThreadID tid);
+
 
     /** Inserts a load into the LSQ. */
     void insertLoad(const DynInstPtr &load_inst);
