@@ -19,7 +19,8 @@ enum class AddrProvRule : uint8_t {
     PreserveSelected,
     SeedStrongResult,
     SeedWeakResult,
-    ScaledIndexBase
+    ScaledIndexBase,
+    ScaledIndexBasePreserve
 };
 
 // Pure diagnostic ancestry. Neither state transitions nor key generation may
@@ -190,8 +191,8 @@ propagateAddrProvByMagnitude(RegVal lhs, const AddrProv &lhs_prov,
 }
 
 /*
- * SH1/2/3ADD, their .uw forms, and ADD.UW identify the unscaled rs2
- * operand as the base position. Compare the original full-XLEN operands,
+ * Fresh-candidate policy for ADD.UW, also used as the numeric gate for
+ * SH1/2/3ADD and their .uw forms. Compare the original full-XLEN operands,
  * before any ISA shift or .uw truncation. Only a strictly larger base
  * magnitude creates a credential, regardless of incoming provenance.
  *
@@ -213,6 +214,28 @@ selectAddrScaledBaseByMagnitude(RegVal index_value, RegVal base_value,
                                  AddrProvOrigin::ScaledIndexDominant, producer_pc);
     return ambiguousAddrProv(base_magnitude,
                              AddrProvOrigin::ScaledMagnitudeTie, producer_pc);
+}
+
+/*
+ * SH1/2/3ADD and their .uw forms retain the same directional numeric gate.
+ * Only after rs2 wins may its existing WEAK/STRONG provenance be inherited,
+ * including its state and diagnostic ancestry. NONE/AMBIGUOUS sources use
+ * the fresh STRONG raw-rs2 candidate selected by the numeric gate instead.
+ * A known source never overrides an index-dominant or tied rejection.
+ */
+[[nodiscard]] inline constexpr AddrProv
+selectAddrScaledBasePreserving(RegVal index_value, RegVal base_value,
+                               const AddrProv &base_prov, unsigned xlen,
+                               Addr producer_pc = 0)
+{
+    const AddrProv selected = selectAddrScaledBaseByMagnitude(
+        index_value, base_value, xlen, producer_pc);
+    if (selected.state == AddrProv::State::STRONG &&
+        (base_prov.state == AddrProv::State::WEAK ||
+         base_prov.state == AddrProv::State::STRONG)) {
+        return propagateBasePreserving(base_prov);
+    }
+    return selected;
 }
 
 /*

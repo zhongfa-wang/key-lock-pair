@@ -458,7 +458,9 @@ let {{
         elif name in ('lui', 'c_lui', 'c_li'):
             rule = 'SeedWeakResult'
         elif name in ('sh1add', 'sh2add', 'sh3add', 'sh1add_uw',
-                      'sh2add_uw', 'sh3add_uw', 'add_uw'):
+                      'sh2add_uw', 'sh3add_uw'):
+            rule = 'ScaledIndexBasePreserve'
+        elif name == 'add_uw':
             rule = 'ScaledIndexBase'
         elif name in ('and', 'or', 'xor', 'c_and', 'c_or', 'c_xor'):
             rule = 'PreserveSelected'

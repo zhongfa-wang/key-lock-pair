@@ -423,16 +423,26 @@ DynInst::updateAddrProv()
             }
             break;
           case AddrProvRule::ScaledIndexBase:
+          case AddrProvRule::ScaledIndexBasePreserve:
             if (numSrcRegs() == 2) {
                 const AddrProv index = source_prov(0);
                 const AddrProv base = source_prov(1);
                 const RegVal index_value = source_value(0);
                 const RegVal base_value = source_value(1);
-                dest_prov = selectAddrScaledBaseByMagnitude(
-                    index_value, base_value, xlen, producer_pc);
-                // Every comparison creates a fresh result, even when either
-                // input was ambiguous. Input states below are diagnostic only.
-                fresh_origin = true;
+                const bool preserve_base = staticInst->getAddrProvRule() ==
+                    AddrProvRule::ScaledIndexBasePreserve;
+                dest_prov = preserve_base ?
+                    selectAddrScaledBasePreserving(index_value, base_value,
+                                                  base, xlen, producer_pc) :
+                    selectAddrScaledBaseByMagnitude(
+                        index_value, base_value, xlen, producer_pc);
+                // Inherited credentials retain their diagnostic ancestry.
+                // Numeric rejection and recovery from an unavailable source
+                // still create a fresh result at this instruction.
+                fresh_origin = !preserve_base ||
+                    base.state == AddrProv::State::NONE ||
+                    base.state == AddrProv::State::AMBIGUOUS ||
+                    dest_prov.state == AddrProv::State::AMBIGUOUS;
                 if (cpu->isKlpEnabled()) {
                     cpu->klpProvStats.recordScaled(index, base, dest_prov,
                         index_value, base_value, xlen);
