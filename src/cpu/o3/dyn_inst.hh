@@ -59,6 +59,7 @@
 #include "cpu/inst_seq.hh"
 #include "cpu/o3/cpu.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
+#include "cpu/o3/klp_timing_stats.hh"
 #include "cpu/o3/lsq_unit.hh"
 #include "cpu/op_class.hh"
 #include "cpu/reg_class.hh"
@@ -378,6 +379,9 @@ class DynInst : public ExecContext, public RefCounted
     // LQ validation state belongs to this execution attempt. Data and lock
     // snapshots remain owned by savedRequest until writeback or squash.
     bool klpKeyGenerated = false;
+    // Diagnostic snapshots; never used for key generation or authorization.
+    AddrProv klpKeyProvenance = noneAddrProv();
+    KlpTimingState klpTiming;
     bool klpDataBuffered = false;
     bool klpNeedsInstall = false;
     bool klpStlfBlocked = false;

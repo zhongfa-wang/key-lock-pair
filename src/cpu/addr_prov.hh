@@ -22,6 +22,29 @@ enum class AddrProvRule : uint8_t {
     ScaledIndexBase
 };
 
+// Pure diagnostic ancestry. Neither state transitions nor key generation may
+// inspect these fields. A propagated NONE/AMBIGUOUS retains its first origin.
+enum class AddrProvOrigin : uint8_t {
+    Untracked,
+    ArchitecturalReset,
+    CpuTakeover,
+    Unsupported,
+    FaultOrPredicate,
+    MemoryPending,
+    ZeroRegister,
+    MagnitudeTie,
+    LogicalTie,
+    ScaledBaseSelected,
+    ScaledIndexDominant,
+    ScaledMagnitudeTie,
+    ArithmeticSelected,
+    StrongSeed,
+    WeakSeed,
+    ConstantSeed,
+    LoadSeed,
+    NumOrigins
+};
+
 struct AddrProv
 {
     enum class State : uint8_t {
@@ -33,6 +56,8 @@ struct AddrProv
 
     State state = State::NONE;
     RegVal candidate = 0;
+    AddrProvOrigin origin = AddrProvOrigin::Untracked;
+    Addr originPc = 0;
 };
 
 /*
@@ -42,38 +67,53 @@ struct AddrProv
  * but its candidate must never authorize a speculative load.
  */
 [[nodiscard]] inline constexpr AddrProv
-noneAddrProv()
+noneAddrProv(AddrProvOrigin origin = AddrProvOrigin::Untracked,
+             Addr origin_pc = 0)
 {
     return {
         AddrProv::State::NONE,
-        0
+        0,
+        origin,
+        origin_pc
     };
 }
 
 [[nodiscard]] inline constexpr AddrProv
-weakAddrProv(RegVal candidate)
+weakAddrProv(RegVal candidate,
+             AddrProvOrigin origin = AddrProvOrigin::Untracked,
+             Addr origin_pc = 0)
 {
     return {
         AddrProv::State::WEAK,
-        candidate
+        candidate,
+        origin,
+        origin_pc
     };
 }
 
 [[nodiscard]] inline constexpr AddrProv
-strongAddrProv(RegVal candidate)
+strongAddrProv(RegVal candidate,
+             AddrProvOrigin origin = AddrProvOrigin::Untracked,
+             Addr origin_pc = 0)
 {
     return {
         AddrProv::State::STRONG,
-        candidate
+        candidate,
+        origin,
+        origin_pc
     };
 }
 
 [[nodiscard]] inline constexpr AddrProv
-ambiguousAddrProv(RegVal candidate)
+ambiguousAddrProv(RegVal candidate,
+             AddrProvOrigin origin = AddrProvOrigin::Untracked,
+             Addr origin_pc = 0)
 {
     return {
         AddrProv::State::AMBIGUOUS,
-        candidate
+        candidate,
+        origin,
+        origin_pc
     };
 }
 
@@ -87,13 +127,13 @@ propagateBasePreserving(const AddrProv &src)
 {
     switch (src.state) {
       case AddrProv::State::NONE:
-        return noneAddrProv();
+        return noneAddrProv(src.origin, src.originPc);
       case AddrProv::State::WEAK:
-        return weakAddrProv(src.candidate);
+        return weakAddrProv(src.candidate, src.origin, src.originPc);
       case AddrProv::State::STRONG:
-        return strongAddrProv(src.candidate);
+        return strongAddrProv(src.candidate, src.origin, src.originPc);
       case AddrProv::State::AMBIGUOUS:
-        return ambiguousAddrProv(src.candidate);
+        return ambiguousAddrProv(src.candidate, src.origin, src.originPc);
     }
     return ambiguousAddrProv(0);
 }
@@ -121,13 +161,16 @@ addrProvMagnitude(RegVal value, unsigned xlen)
  * Preserve the winning raw register value. Ties retain their common magnitude.
  */
 [[nodiscard]] inline constexpr AddrProv
-selectAddrProvByMagnitude(RegVal lhs, RegVal rhs, unsigned xlen)
+selectAddrProvByMagnitude(RegVal lhs, RegVal rhs, unsigned xlen,
+                          Addr producer_pc = 0)
 {
     const RegVal lhs_magnitude = addrProvMagnitude(lhs, xlen);
     const RegVal rhs_magnitude = addrProvMagnitude(rhs, xlen);
     if (lhs_magnitude == rhs_magnitude)
-        return ambiguousAddrProv(lhs_magnitude);
-    return strongAddrProv(lhs_magnitude > rhs_magnitude ? lhs : rhs);
+        return ambiguousAddrProv(lhs_magnitude,
+                                 AddrProvOrigin::MagnitudeTie, producer_pc);
+    return strongAddrProv(lhs_magnitude > rhs_magnitude ? lhs : rhs,
+                          AddrProvOrigin::ArithmeticSelected, producer_pc);
 }
 
 // Register logic selects a source by current operand values, then copies
@@ -135,34 +178,41 @@ selectAddrProvByMagnitude(RegVal lhs, RegVal rhs, unsigned xlen)
 [[nodiscard]] inline constexpr AddrProv
 propagateAddrProvByMagnitude(RegVal lhs, const AddrProv &lhs_prov,
                             RegVal rhs, const AddrProv &rhs_prov,
-                            unsigned xlen)
+                            unsigned xlen, Addr producer_pc = 0)
 {
     const RegVal lhs_magnitude = addrProvMagnitude(lhs, xlen);
     const RegVal rhs_magnitude = addrProvMagnitude(rhs, xlen);
     if (lhs_magnitude == rhs_magnitude)
-        return ambiguousAddrProv(lhs_magnitude);
+        return ambiguousAddrProv(lhs_magnitude,
+                                 AddrProvOrigin::LogicalTie, producer_pc);
     return propagateBasePreserving(
         lhs_magnitude > rhs_magnitude ? lhs_prov : rhs_prov);
 }
 
 /*
- * SH1/2/3ADD, their .uw forms, and ADD.UW have an explicit unscaled
- * base in source 1. Retain the original semantic merge policy rather than
- * comparing magnitudes. A newly ambiguous result records abs(actual base),
- * including when ambiguity is inherited from either input.
+ * SH1/2/3ADD, their .uw forms, and ADD.UW identify the unscaled rs2
+ * operand as the base position. Compare the original full-XLEN operands,
+ * before any ISA shift or .uw truncation. Only a strictly larger base
+ * magnitude creates a credential, regardless of incoming provenance.
+ *
+ * Preserve raw rs2 on success AND when the index is larger. In the latter
+ * case the result is AMBIGUOUS and cannot authorize speculation. Equal
+ * magnitudes retain their common absolute value, as ordinary R-type ties do.
  */
 [[nodiscard]] inline constexpr AddrProv
-mergeAddrScaledIndexBase(const AddrProv &index, const AddrProv &base,
-                         RegVal base_value, unsigned xlen)
+selectAddrScaledBaseByMagnitude(RegVal index_value, RegVal base_value,
+                                unsigned xlen, Addr producer_pc = 0)
 {
-    using State = AddrProv::State;
-    if (index.state == State::AMBIGUOUS || base.state == State::AMBIGUOUS)
-        return ambiguousAddrProv(addrProvMagnitude(base_value, xlen));
-    if (index.state == State::NONE)
-        return propagateBasePreserving(base);
-    if (index.state == State::WEAK && base.state == State::STRONG)
-        return propagateBasePreserving(base);
-    return ambiguousAddrProv(addrProvMagnitude(base_value, xlen));
+    const RegVal index_magnitude = addrProvMagnitude(index_value, xlen);
+    const RegVal base_magnitude = addrProvMagnitude(base_value, xlen);
+    if (base_magnitude > index_magnitude)
+        return strongAddrProv(base_value,
+                              AddrProvOrigin::ScaledBaseSelected, producer_pc);
+    if (index_magnitude > base_magnitude)
+        return ambiguousAddrProv(base_value,
+                                 AddrProvOrigin::ScaledIndexDominant, producer_pc);
+    return ambiguousAddrProv(base_magnitude,
+                             AddrProvOrigin::ScaledMagnitudeTie, producer_pc);
 }
 
 /*

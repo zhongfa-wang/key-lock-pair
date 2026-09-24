@@ -524,6 +524,7 @@ IEW::squashDueToMemOrder(const DynInstPtr& inst, ThreadID tid)
     if (squashSourceDiscarded(inst, tid)) {
         DPRINTF(IEW, "[tid:%i] Ignoring discarded memory-order squash source "
                 "[sn:%llu].\n", tid, inst->seqNum);
+        ++cpu->klpTimingStats.memOrderRecoverySuppressed;
         return;
     }
 
@@ -548,6 +549,9 @@ IEW::squashDueToMemOrder(const DynInstPtr& inst, ThreadID tid)
         toCommit->includeSquashInst[tid] = true;
 
         wroteToTimeBuffer = true;
+        ++cpu->klpTimingStats.memOrderRecoveryHandled;
+    } else {
+        ++cpu->klpTimingStats.memOrderRecoverySuppressed;
     }
 }
 
@@ -1433,6 +1437,7 @@ IEW::executeInsts()
                         "already squashing\n");
 
                 ++iewStats.memOrderViolationEvents;
+                ++cpu->klpTimingStats.memOrderRecoverySuppressed;
             }
         }
     }
@@ -1483,6 +1488,7 @@ IEW::writebackInsts()
         // when it's ready to execute the strictly ordered load.
         if (!inst->isSquashed() && inst->isExecuted() &&
                 inst->getFault() == NoFault) {
+            cpu->klpTimingStats.recordBroadcast(*inst);
             int dependents = instQueue.wakeDependents(inst);
 
             for (int i = 0; i < inst->numDestRegs(); i++) {

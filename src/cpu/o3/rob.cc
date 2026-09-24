@@ -155,6 +155,7 @@ ROB::updateInstsToReExec(std::vector<DynInstPtr>& authorized,
             inst->getFault() == NoFault &&
             !inst->isNonSpeculative() && !inst->isSerializing()) {
             inst->setUncondiState(gem5::triStateVal::TRUE);
+            cpu->klpTimingStats.recordGrant(*inst);
             authorized.push_back(inst);
         }
         // Futuristic grants only at the actual ROB head, not to the next
@@ -296,6 +297,8 @@ ROB::retireHead(ThreadID tid)
 
     head_inst->clearInROB();
     head_inst->setCommitted();
+    cpu->klpTimingStats.recordBranchRetire(*head_inst);
+    cpu->klpTimingStats.recordRetirement(*head_inst);
 
     //Update "Global" Head of ROB
     updateHead();

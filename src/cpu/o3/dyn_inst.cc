@@ -355,15 +355,25 @@ DynInst::setSquashed()
 void
 DynInst::clearDestAddrProv()
 {
+    const AddrProvOrigin origin = isMemRef() ? AddrProvOrigin::MemoryPending :
+        fault != NoFault || !readPredicate() ? AddrProvOrigin::FaultOrPredicate :
+                                              AddrProvOrigin::Unsupported;
+    const AddrProv cleared = noneAddrProv(origin, pcState().instAddr());
     for (int idx = 0; idx < numDestRegs(); ++idx)
-        setAddrProvOperand(staticInst.get(), idx, noneAddrProv());
+        setAddrProvOperand(staticInst.get(), idx, cleared);
 }
 
 void
 DynInst::updateAddrProv()
 {
     const unsigned xlen = tcBase()->getIsaPtr()->addrProvXlen();
-    AddrProv dest_prov = noneAddrProv();
+    const Addr producer_pc = pcState().instAddr();
+    const AddrProvOrigin clear_origin = isMemRef() ? AddrProvOrigin::MemoryPending :
+        fault != NoFault || !readPredicate() ? AddrProvOrigin::FaultOrPredicate :
+                                              AddrProvOrigin::Unsupported;
+    AddrProv dest_prov = noneAddrProv(clear_origin, producer_pc);
+    bool fresh_origin = true;
+    AddrProvOrigin step_reason = clear_origin;
     const bool int_op = opClass() == IntAluOp ||
                         opClass() == IntMultOp || opClass() == IntDivOp;
     bool eligible = xlen != 0 && fault == NoFault && readPredicate() &&
@@ -385,57 +395,77 @@ DynInst::updateAddrProv()
             const PhysRegIdPtr reg = renamedSrcIdx(idx);
             return reg->is(InvalidRegClass) ? 0 : cpu->getRegNoStats(reg);
         };
+        const auto source_prov = [this](int idx) -> AddrProv {
+            return renamedSrcIdx(idx)->is(InvalidRegClass) ?
+                noneAddrProv(AddrProvOrigin::ZeroRegister) :
+                getAddrProvOperand(staticInst.get(), idx);
+        };
         switch (staticInst->getAddrProvRule()) {
           case AddrProvRule::SeedStrongResult:
             dest_prov = strongAddrProv(
-                cpu->getRegNoStats(renamedDestIdx(0)));
+                cpu->getRegNoStats(renamedDestIdx(0)),
+                AddrProvOrigin::StrongSeed, producer_pc);
             break;
           case AddrProvRule::SeedWeakResult:
             dest_prov = weakAddrProv(
-                cpu->getRegNoStats(renamedDestIdx(0)));
+                cpu->getRegNoStats(renamedDestIdx(0)),
+                AddrProvOrigin::WeakSeed, producer_pc);
             break;
           case AddrProvRule::SeedConstantOrPreserve:
             // ADDI/ADDIW with x0 materialize a constant. Otherwise they
             // retain the source candidate, even for word truncation.
             if (numSrcRegs() == 1) {
-                dest_prov = staticInst->srcRegIdx(0).is(InvalidRegClass) ?
-                    weakAddrProv(cpu->getRegNoStats(renamedDestIdx(0))) :
-                    propagateBasePreserving(
-                        getAddrProvOperand(staticInst.get(), 0));
+                fresh_origin = staticInst->srcRegIdx(0).is(InvalidRegClass);
+                dest_prov = fresh_origin ?
+                    weakAddrProv(cpu->getRegNoStats(renamedDestIdx(0)),
+                                 AddrProvOrigin::ConstantSeed, producer_pc) :
+                    propagateBasePreserving(source_prov(0));
             }
             break;
           case AddrProvRule::ScaledIndexBase:
             if (numSrcRegs() == 2) {
-                dest_prov = mergeAddrScaledIndexBase(
-                    getAddrProvOperand(staticInst.get(), 0),
-                    getAddrProvOperand(staticInst.get(), 1),
-                    source_value(1), xlen);
+                const AddrProv index = source_prov(0);
+                const AddrProv base = source_prov(1);
+                const RegVal index_value = source_value(0);
+                const RegVal base_value = source_value(1);
+                dest_prov = selectAddrScaledBaseByMagnitude(
+                    index_value, base_value, xlen, producer_pc);
+                // Every comparison creates a fresh result, even when either
+                // input was ambiguous. Input states below are diagnostic only.
+                fresh_origin = true;
+                if (cpu->isKlpEnabled()) {
+                    cpu->klpProvStats.recordScaled(index, base, dest_prov,
+                        index_value, base_value, xlen);
+                }
             }
             break;
           case AddrProvRule::PreserveFirst:
             if (numSrcRegs() >= 1) {
-                dest_prov = propagateBasePreserving(
-                    getAddrProvOperand(staticInst.get(), 0));
+                dest_prov = propagateBasePreserving(source_prov(0));
+                fresh_origin = false;
             }
             break;
           case AddrProvRule::PreserveSelected:
             if (numSrcRegs() == 2) {
+                const RegVal lhs = source_value(0);
+                const RegVal rhs = source_value(1);
                 dest_prov = propagateAddrProvByMagnitude(
-                    source_value(0), getAddrProvOperand(staticInst.get(), 0),
-                    source_value(1), getAddrProvOperand(staticInst.get(), 1),
-                    xlen);
+                    lhs, source_prov(0), rhs, source_prov(1), xlen, producer_pc);
+                fresh_origin = addrProvMagnitude(lhs, xlen) ==
+                               addrProvMagnitude(rhs, xlen);
             }
             break;
           case AddrProvRule::Default:
             if (numSrcRegs() == 2) {
                 dest_prov = selectAddrProvByMagnitude(
-                    source_value(0), source_value(1), xlen);
+                    source_value(0), source_value(1), xlen, producer_pc);
             } else if (numSrcRegs() == 1) {
-                dest_prov = propagateBasePreserving(
-                    getAddrProvOperand(staticInst.get(), 0));
+                dest_prov = propagateBasePreserving(source_prov(0));
+                fresh_origin = false;
             }
             break;
         }
+        step_reason = dest_prov.origin;
     }
 
     // Replace all destination metadata on every execution, including faults,
@@ -450,6 +480,16 @@ DynInst::updateAddrProv()
                 pcState().instAddr(), seqNum,
                 static_cast<unsigned>(numSrcRegs()), xlen,
                 static_cast<unsigned>(dest_prov.state), dest_prov.candidate);
+    }
+    if (cpu->isKlpEnabled()) {
+        for (int idx = 0; idx < numDestRegs(); ++idx) {
+            if (renamedDestIdx(idx)->is(IntRegClass)) {
+                cpu->klpProvStats.recordProducer(producer_pc,
+                    staticInst->getName().c_str(), dest_prov, fresh_origin,
+                    step_reason);
+                break; // One observation per executed instruction.
+            }
+        }
     }
 }
 // } [klp]
@@ -551,7 +591,15 @@ DynInst::completeAcc(PacketPtr pkt)
             setAddrProvOperand(
                 staticInst.get(),
                 dest_idx,
-                weakAddrProv(loaded_value));
+                weakAddrProv(loaded_value, AddrProvOrigin::LoadSeed,
+                             pcState().instAddr()));
+            if (cpu->isKlpEnabled()) {
+                cpu->klpProvStats.recordProducer(pcState().instAddr(),
+                    staticInst->getName().c_str(),
+                    weakAddrProv(loaded_value, AddrProvOrigin::LoadSeed,
+                                 pcState().instAddr()),
+                    true, AddrProvOrigin::LoadSeed);
+            }
 
 #ifndef NDEBUG
             const AddrProv &stored_prov =

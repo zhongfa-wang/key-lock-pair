@@ -67,6 +67,8 @@
 #include "cpu/base.hh"
 #include "cpu/simple_thread.hh"
 #include "cpu/timebuf.hh"
+#include "cpu/o3/klp_prov_stats.hh"
+#include "cpu/o3/klp_timing_stats.hh"
 #include "params/BaseO3CPU.hh"
 #include "sim/process.hh"
 
@@ -626,6 +628,9 @@ class CPU : public BaseCPU
         statistics::Formula stallCycAvg;
         // } [klp]
     } cpuStats;
+
+    KlpProvStats klpProvStats;
+    KlpTimingStats klpTimingStats;
 
   public:
     // hardware transactional memory

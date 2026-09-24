@@ -206,6 +206,7 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
         // Unrelated future batches must not recheck an unchanged lock view.
         const bool had_event = request->klpEventTouched;
         request->klpEventTouched = false;
+        noteKlpDataReady(inst);
         const bool passed = validateKlpLoad(inst, request);
         inst->setPassTagVeriDynInstCarrier(passed ? triStateVal::TRUE :
                                                   triStateVal::FALSE);
@@ -221,6 +222,7 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
                 inst->statsUpdated[5] = true;
                 inst->stallCycStart = cpu->curCycle();
                 ++stats.klpHeldLoads;
+                noteKlpHold(inst);
             }
             DPRINTF(KLPDEBUG, "LQ holds complete load [sn:%llu] key=%#x\n",
                     inst->seqNum, inst->getSecTagInDynInst());
@@ -271,11 +273,19 @@ bool
 LSQUnit::validateKlpLoad(const DynInstPtr &inst, LSQRequest *request,
                        bool recheck)
 {
-    if (recheck)
+    if (recheck) {
         ++stats.klpRechecks;
-    else
+    } else {
         ++stats.klpChecks;
+        cpu->klpProvStats.recordLoad(inst->pcState().instAddr(),
+                                    inst->klpKeyProvenance, false);
+    }
+    auto &diag = cpu->klpTimingStats.state(*inst);
     if (inst->getIsBaseUnknown() != triStateVal::FALSE) {
+        diag.lastCheckOutcome = inst->klpKeyProvenance.state ==
+            AddrProv::State::AMBIGUOUS ? 2 : 1;
+        if (!recheck)
+            ++stats.klpDiag.checkOutcome[diag.lastCheckOutcome];
         if (recheck)
             ++stats.klpRecheckFailed;
         else
@@ -320,6 +330,10 @@ LSQUnit::validateKlpLoad(const DynInstPtr &inst, LSQRequest *request,
         }
     }
     const bool passed = !invalid && !mismatch;
+    diag.lastCheckOutcome = passed ? 0 :
+        (invalid ? (mismatch ? 5 : 3) : 4);
+    if (!recheck)
+        ++stats.klpDiag.checkOutcome[diag.lastCheckOutcome];
     if (recheck) {
         if (passed)
             ++stats.klpRecheckPassed;
@@ -362,6 +376,7 @@ LSQUnit::grantKlpUncondi(const DynInstPtr &inst)
         // buffered bytes into registers if a snoop has already faulted it.
         writebackKlpData(inst, request);
     } else if (inst->klpStlfBlocked) {
+        noteKlpStlfWake(inst, true);
         inst->klpStlfBlocked = false;
         inst->klpStlfStoreSeq = 0;
         ++stats.klpStlfRetries;
@@ -378,6 +393,7 @@ LSQUnit::wakeKlpStlfLoads(InstSeqNum store_seq)
         const auto &inst = entry.instruction();
         if (!inst->isSquashed() && inst->klpStlfBlocked &&
             inst->klpStlfStoreSeq == store_seq) {
+            noteKlpStlfWake(inst, false);
             inst->klpStlfBlocked = false;
             inst->klpStlfStoreSeq = 0;
             ++stats.klpStlfRetries;
@@ -590,6 +606,7 @@ LSQUnit::processKlpInstallEvents()
         if (!request->isComplete() && request->klpForwardData.empty())
             continue;
         request->klpEventTouched = false;
+        noteKlpDataReady(inst);
         const bool passed = validateKlpLoad(inst, request, true);
         inst->setPassTagVeriDynInstCarrier(passed ? triStateVal::TRUE :
                                                   triStateVal::FALSE);
@@ -609,8 +626,68 @@ LSQUnit::processKlpInstallEvents()
             inst->statsUpdated[5] = true;
             inst->stallCycStart = cpu->curCycle();
             ++stats.klpHeldLoads;
+            noteKlpHold(inst);
         }
     }
+}
+
+void
+LSQUnit::noteKlpDataReady(const DynInstPtr &inst)
+{
+    auto &diag = cpu->klpTimingStats.state(*inst);
+    if (!diag.dataReadyValid) {
+        diag.dataReadyValid = true;
+        diag.dataReadyCycle = cpu->curCycle();
+    }
+}
+
+void
+LSQUnit::noteKlpHold(const DynInstPtr &inst)
+{
+    auto &diag = cpu->klpTimingStats.state(*inst);
+    if (!diag.cacheHoldValid) {
+        diag.cacheHoldValid = true;
+        diag.cacheHoldCycle = cpu->curCycle();
+        ++stats.klpDiag.heldReason[diag.lastCheckOutcome];
+        cpu->klpProvStats.recordLoad(inst->pcState().instAddr(),
+                                    inst->klpKeyProvenance, true);
+    }
+}
+
+void
+LSQUnit::noteKlpStlfWake(const DynInstPtr &inst, bool by_uncondi)
+{
+    auto &diag = cpu->klpTimingStats.state(*inst);
+    ++stats.klpDiag.stlfWakeReason[by_uncondi ? 0 : 1];
+    if (diag.stlfBlockActive) {
+        const auto elapsed = static_cast<uint64_t>(
+            cpu->curCycle() - diag.stlfBlockStartCycle);
+        stats.klpDiag.stlfBlockToWake.sample(elapsed);
+        diag.stlfBlockCycles += elapsed;
+    }
+    diag.stlfBlockActive = false;
+    diag.stlfLastRetryValid = true;
+    diag.stlfLastRetryCycle = cpu->curCycle();
+    diag.stlfLastRetryReason = by_uncondi ?
+        KlpRetryReason::Uncondi : KlpRetryReason::StoreComplete;
+    diag.stlfRetryPending = true;
+}
+
+void
+LSQUnit::noteKlpViolation(const DynInstPtr &trigger,
+                         const DynInstPtr &victim, bool has_request)
+{
+    // Compare original byte ranges without overflow, in addition to the
+    // unmodified LSQDepCheckShift-sized conflict test which selected this pair.
+    const Addr a = trigger->effAddr, b = victim->effAddr;
+    const bool bytes = trigger->effSize && victim->effSize &&
+        (a <= b ? b - a < trigger->effSize : a - b < victim->effSize);
+    const auto &diag = cpu->klpTimingStats.state(*victim);
+    const unsigned flags = (victim->klpDataBuffered ? 1 : 0) |
+        (diag.stlfEverBlocked ? 2 : 0) | (victim->isExecuted() ? 4 : 0) |
+        (victim->isUncondi() ? 8 : 0) | (has_request ? 16 : 0);
+    stats.klpDiag.recordViolation(trigger->pcState().instAddr(),
+        victim->pcState().instAddr(), trigger->isLoad(), bytes, flags);
 }
 
 void
@@ -618,6 +695,9 @@ LSQUnit::finishKlpWait(const DynInstPtr &inst)
 {
     if (!inst->klpDataBuffered)
         return;
+    auto &diag = cpu->klpTimingStats.state(*inst);
+    diag.releaseValid = true;
+    diag.releaseCycle = cpu->curCycle();
     inst->klpDataBuffered = false;
     inst->statsUpdated[6] = true;
     inst->stallCycEnd = cpu->curCycle();
@@ -630,6 +710,13 @@ LSQUnit::writebackKlpData(const DynInstPtr &inst, LSQRequest *request,
                         bool defer_writeback)
 {
     assert(!request->klpResultDelivered);
+    if (!inst->isSquashed() && inst->fault == NoFault) {
+        auto &diag = cpu->klpTimingStats.state(*inst);
+        if (!diag.releaseValid) {
+            diag.releaseValid = true;
+            diag.releaseCycle = cpu->curCycle();
+        }
+    }
     // Uncondi can release many held loads at once too. Keep its old same-cycle
     // completion when a slot exists, otherwise use the same bounded path as
     // installation events. Normal cache responses obey this limit as well.
@@ -838,6 +925,7 @@ LSQUnit::name() const
 
 LSQUnit::LSQUnitStats::LSQUnitStats(statistics::Group *parent)
     : statistics::Group(parent),
+      klpDiag(this),
       ADD_STAT(forwLoads, statistics::units::Count::get(),
                "Number of loads that had data forwarded from stores"),
       ADD_STAT(klpChecks, statistics::units::Count::get(),
@@ -1141,6 +1229,9 @@ LSQUnit::checkSnoop(PacketPtr pkt)
                 DPRINTF(LSQUnit, "Conflicting load at addr %#x [sn:%lli]\n",
                         pkt->getAddr(), ld_inst->seqNum);
 
+                ++stats.klpDiag.snoopReexec;
+                if (ld_inst->klpDataBuffered)
+                    ++stats.klpDiag.snoopReexecHeld;
                 // Mark the load for re-execution
                 ld_inst->fault = std::make_shared<ReExec>();
                 request->setStateToFault();
@@ -1211,6 +1302,7 @@ LSQUnit::checkViolations(typename LoadQueue::iterator& loadIt,
                         memDepViolator = ld_inst;
 
                         ++stats.memOrderViolation;
+                        noteKlpViolation(inst, ld_inst, loadIt->hasRequest());
 
                         return std::make_shared<GenericISA::M5PanicFault>(
                             "Detected fault with inst [sn:%lli] and "
@@ -1238,6 +1330,7 @@ LSQUnit::checkViolations(typename LoadQueue::iterator& loadIt,
                 memDepViolator = ld_inst;
 
                 ++stats.memOrderViolation;
+                noteKlpViolation(inst, ld_inst, loadIt->hasRequest());
 
                 return std::make_shared<GenericISA::M5PanicFault>(
                     "Detected fault with "
@@ -1658,6 +1751,20 @@ LSQUnit::squash(const InstSeqNum &squashed_num)
             DPRINTF(HtmCpu, ">> htmStarts (%d) : htmStops-- (%d)\n",
               htmStarts, htmStops);
         }
+        // Observe discarded waiting intervals before clearing functional state.
+        const auto &diag_inst = loadQueue.back().instruction();
+        auto &diag = cpu->klpTimingStats.state(*diag_inst);
+        if (diag_inst->klpDataBuffered) {
+            ++stats.klpDiag.squashedHeld;
+            if (diag.cacheHoldValid)
+                stats.klpDiag.heldToSquash.sample(static_cast<uint64_t>(
+                    cpu->curCycle() - diag.cacheHoldCycle));
+        }
+        if (diag.stlfEverBlocked)
+            ++stats.klpDiag.squashedAfterStlfBlock;
+        if (diag.stlfBlockActive)
+            stats.klpDiag.stlfBlockToSquash.sample(static_cast<uint64_t>(
+                cpu->curCycle() - diag.stlfBlockStartCycle));
         // Clear the smart pointer to make sure it is decremented.
         loadQueue.back().instruction()->setSquashed();
         loadQueue.back().instruction()->klpDataBuffered = false;
@@ -2036,7 +2143,19 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
 
     assert(!load_inst->isExecuted());
 
+    auto &diag = cpu->klpTimingStats.state(*load_inst);
+    const bool diag_retried = diag.stlfRetryPending;
+    if (diag_retried) {
+        diag.stlfRetryPending = false;
+        ++diag.stlfReadAttempts;
+        ++stats.klpDiag.stlfReadsAfterRetry;
+        stats.klpDiag.stlfRetryToRead.sample(static_cast<uint64_t>(
+            cpu->curCycle() - diag.stlfLastRetryCycle));
+    }
+
     if (load_inst->isKlpLoad() && !load_inst->klpKeyGenerated) {
+        load_inst->klpKeyProvenance = load_inst->getAddrProvOperand(
+            load_inst->staticInst.get(), 0);
         load_inst->setSecTagInDynInst(
             load_inst->staticInst->genSecTag(load_inst.get()));
         load_inst->klpKeyGenerated = true;
@@ -2049,6 +2168,8 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
 
     if (request->mainReq()->isStrictlyOrdered() &&
         (load_idx != loadQueue.head() || !load_inst->isAtCommit())) {
+        if (diag_retried)
+            ++stats.klpDiag.stlfRetryOutcome[4];
         // Tell IQ/mem dep unit that this instruction will need to be
         // rescheduled eventually
         iewStage->rescheduleMemInst(load_inst);
@@ -2085,6 +2206,8 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
     }
 
     if (request->mainReq()->isLocalAccess()) {
+        if (diag_retried)
+            ++stats.klpDiag.stlfRetryOutcome[4];
         assert(!load_inst->memData);
         load_inst->memData = new uint8_t[MaxDataBytes];
 
@@ -2184,6 +2307,29 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
                         store_inst->seqNum, match, !known,
                         load_inst->isUncondi());
                 if (!load_inst->isUncondi() && !match) {
+                    const bool store_known =
+                        store_inst->getIsBaseUnknown() == triStateVal::FALSE;
+                    const unsigned reason = !known ?
+                        (store_known ? 0 : 2) : (store_known ? 3 : 1);
+                    ++stats.klpDiag.stlfBlockReason[reason];
+                    stats.klpDiag.recordStlfPair(
+                        load_inst->pcState().instAddr(),
+                        store_inst->pcState().instAddr(), reason);
+                    if (!diag.stlfEverBlocked) {
+                        diag.stlfEverBlocked = true;
+                        diag.stlfFirstBlockValid = true;
+                        diag.stlfFirstBlockCycle = cpu->curCycle();
+                        ++stats.klpDiag.stlfBlockedLoads;
+                        cpu->klpProvStats.recordLoad(
+                            load_inst->pcState().instAddr(),
+                            load_inst->klpKeyProvenance,
+                            KlpProvStats::LoadPhase::StlfBlocked);
+                    }
+                    ++diag.stlfBlockCount;
+                    diag.stlfBlockActive = true;
+                    diag.stlfBlockStartCycle = cpu->curCycle();
+                    if (diag_retried)
+                        ++stats.klpDiag.stlfRetryOutcome[2];
                     // Keep this dependency per load: several loads can wait
                     // on different stores, independently of partial-STLF.
                     load_inst->klpStlfBlocked = true;
@@ -2205,6 +2351,13 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
             }
 
             if (coverage == AddrRangeCoverage::FullAddrRangeCoverage) {
+                if (diag_retried)
+                    ++stats.klpDiag.stlfRetryOutcome[0];
+                if (load_inst->isKlpLoad()) {
+                    noteKlpDataReady(load_inst);
+                    diag.releaseValid = true;
+                    diag.releaseCycle = cpu->curCycle();
+                }
                 // Get shift amount for offset into the store's data.
                 int shift_amt = request->mainReq()->getVaddr() -
                     store_it->instruction()->effAddr;
@@ -2284,6 +2437,8 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
                 return NoFault;
             } else if (
                     coverage == AddrRangeCoverage::PartialAddrRangeCoverage) {
+                if (diag_retried)
+                    ++stats.klpDiag.stlfRetryOutcome[3];
                 // If it's already been written back, then don't worry about
                 // stalling on it.
                 if (store_it->completed()) {
@@ -2323,6 +2478,8 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
         }
     }
 
+    if (diag_retried)
+        ++stats.klpDiag.stlfRetryOutcome[1];
     // If there's no forwarding case, then go access memory
     DPRINTF(LSQUnit, "Doing memory access for inst [sn:%lli] PC %s\n",
             load_inst->seqNum, load_inst->pcState());

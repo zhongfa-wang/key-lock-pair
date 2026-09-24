@@ -185,19 +185,14 @@ PhysRegFile::setAddrProv(
      */
     switch (prov.state) {
       case AddrProv::State::NONE:
-        intAddrProv[idx] = noneAddrProv();
-        return;
-
       case AddrProv::State::WEAK:
-        intAddrProv[idx] = weakAddrProv(prov.candidate);
-        return;
-
       case AddrProv::State::STRONG:
-        intAddrProv[idx] = strongAddrProv(prov.candidate);
-        return;
-
       case AddrProv::State::AMBIGUOUS:
-        intAddrProv[idx] = ambiguousAddrProv(prov.candidate);
+        // Keep pure diagnostic origin metadata alongside the unchanged
+        // architectural provenance. NONE still canonicalizes its candidate.
+        intAddrProv[idx] = prov;
+        if (prov.state == AddrProv::State::NONE)
+            intAddrProv[idx].candidate = 0;
         return;
     }
 

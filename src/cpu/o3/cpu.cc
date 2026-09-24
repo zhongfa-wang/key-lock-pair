@@ -114,7 +114,9 @@ CPU::CPU(const BaseO3CPUParams &params)
       globalSeqNum(1),
       system(params.system),
       lastRunningCycle(curCycle()),
-      cpuStats(this)
+      cpuStats(this),
+      klpProvStats(this),
+      klpTimingStats(this)
 {
     fatal_if(FullSystem && params.numThreads > 1,
             "SMT is not supported in O3 in full system mode currently.");
@@ -932,7 +934,11 @@ CPU::switchOut()
 void
 CPU::takeOverFrom(BaseCPU *oldCPU)
 {
+    // Distinguish takeover live-ins from later architectural writes in
+    // diagnostics only; the existing seed/state policy remains unchanged.
+    klpProvStats.beginTakeover();
     BaseCPU::takeOverFrom(oldCPU);
+    klpProvStats.endTakeover();
 
     fetch.takeOverFrom();
     decode.takeOverFrom();
@@ -1022,7 +1028,10 @@ CPU::resetArchAddrProv(
     assert(phys_reg->is(IntRegClass));
     assert(tid < numThreads);
 
-    regFile.clearAddrProv(phys_reg);
+    const AddrProvOrigin origin = klpProvStats.inTakeover() ?
+        AddrProvOrigin::CpuTakeover : AddrProvOrigin::ArchitecturalReset;
+    // No producer instruction exists for this reset; diagnostic PC is zero.
+    regFile.setAddrProv(phys_reg, noneAddrProv(origin));
 
     const bool is_strong_seed =
         isa[tid]->isAddrProvStrongSeed(flat_reg);
@@ -1032,7 +1041,7 @@ CPU::resetArchAddrProv(
 
         regFile.setAddrProv(
             phys_reg,
-            strongAddrProv(value));
+            strongAddrProv(value, origin));
     }
 
 #ifndef NDEBUG

@@ -59,6 +59,7 @@
 #include "cpu/o3/cpu.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/lsq.hh"
+#include "cpu/o3/klp_lsq_stats.hh"
 #include "cpu/timebuf.hh"
 #include "debug/HtmCpu.hh"
 #include "debug/LSQUnit.hh"
@@ -418,6 +419,11 @@ class LSQUnit
     bool klpStoreCanForward(const KlpInstallEvent &event,
                            const DynInstPtr &load, LSQRequest *request);
     void finishKlpWait(const DynInstPtr &inst);
+    void noteKlpDataReady(const DynInstPtr &inst);
+    void noteKlpHold(const DynInstPtr &inst);
+    void noteKlpStlfWake(const DynInstPtr &inst, bool by_uncondi);
+    void noteKlpViolation(const DynInstPtr &trigger,
+                          const DynInstPtr &victim, bool has_request);
     void writebackKlpData(const DynInstPtr &inst, LSQRequest *request,
                           bool defer_writeback = false);
     bool validateKlpLoad(const DynInstPtr &inst, LSQRequest *request,
@@ -574,6 +580,8 @@ class LSQUnit
     struct LSQUnitStats : public statistics::Group
     {
         LSQUnitStats(statistics::Group *parent);
+
+        KlpLsqStats klpDiag;
 
         /** Total number of loads forwaded from LSQ stores. */
         statistics::Scalar forwLoads;
