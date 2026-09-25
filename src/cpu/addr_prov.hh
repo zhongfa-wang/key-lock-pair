@@ -23,6 +23,12 @@ enum class AddrProvRule : uint8_t {
     ScaledIndexBasePreserve
 };
 
+// ISA semantic operation annotations for candidate propagation.
+// They are independent of diagnostic ancestry.
+enum class AddrProvValueOp : uint8_t {
+    Other, Auipc, AddImmediate, PlainAdd, Copy, Or, Xor
+};
+
 // Pure diagnostic ancestry. Neither state transitions nor key generation may
 // inspect these fields. A propagated NONE/AMBIGUOUS retains its first origin.
 enum class AddrProvOrigin : uint8_t {
@@ -59,6 +65,9 @@ struct AddrProv
     RegVal candidate = 0;
     AddrProvOrigin origin = AddrProvOrigin::Untracked;
     Addr originPc = 0;
+    // Semantic marker for an AUIPC address awaiting its completing operation.
+    // Only a value-preserving copy may propagate this marker unchanged.
+    bool auipcPending = false;
 };
 
 /*
@@ -174,6 +183,39 @@ selectAddrProvByMagnitude(RegVal lhs, RegVal rhs, unsigned xlen,
                           AddrProvOrigin::ArithmeticSelected, producer_pc);
 }
 
+// Ordinary ADD preserves known provenance only after the same
+// signed full-XLEN magnitude gate has selected an operand. Ties stay unknown.
+[[nodiscard]] inline constexpr AddrProv
+selectAddrProvPreserving(RegVal lhs, const AddrProv &lhs_prov,
+                         RegVal rhs, const AddrProv &rhs_prov,
+                         unsigned xlen, Addr producer_pc = 0)
+{
+    const AddrProv fresh = selectAddrProvByMagnitude(lhs, rhs, xlen, producer_pc);
+    if (fresh.state != AddrProv::State::STRONG)
+        return fresh;
+    const AddrProv &source = addrProvMagnitude(lhs, xlen) >
+        addrProvMagnitude(rhs, xlen) ? lhs_prov : rhs_prov;
+    if (source.state == AddrProv::State::WEAK ||
+        source.state == AddrProv::State::STRONG)
+        return propagateBasePreserving(source);
+    return fresh;
+}
+
+// Only callers that prove a value-preserving copy may carry AUIPC pending.
+[[nodiscard]] inline constexpr AddrProv
+copyAddrProvValue(const AddrProv &source)
+{
+    return source;
+}
+
+[[nodiscard]] inline constexpr AddrProv
+completeAuipcAddrProv(const AddrProv &source, RegVal address, Addr pc = 0)
+{
+    return source.auipcPending ?
+        strongAddrProv(address, AddrProvOrigin::StrongSeed, pc) :
+        propagateBasePreserving(source);
+}
+
 // Register logic selects a source by current operand values, then copies
 // that source's candidate AND state, including NONE and AMBIGUOUS.
 [[nodiscard]] inline constexpr AddrProv
@@ -191,7 +233,7 @@ propagateAddrProvByMagnitude(RegVal lhs, const AddrProv &lhs_prov,
 }
 
 /*
- * Fresh-candidate policy for ADD.UW, also used as the numeric gate for
+ * Fresh-candidate numeric gate for ADD.UW and
  * SH1/2/3ADD and their .uw forms. Compare the original full-XLEN operands,
  * before any ISA shift or .uw truncation. Only a strictly larger base
  * magnitude creates a credential, regardless of incoming provenance.
@@ -217,7 +259,7 @@ selectAddrScaledBaseByMagnitude(RegVal index_value, RegVal base_value,
 }
 
 /*
- * SH1/2/3ADD and their .uw forms retain the same directional numeric gate.
+ * ADD.UW, SH1/2/3ADD and their .uw forms use the same directional numeric gate.
  * Only after rs2 wins may its existing WEAK/STRONG provenance be inherited,
  * including its state and diagnostic ancestry. NONE/AMBIGUOUS sources use
  * the fresh STRONG raw-rs2 candidate selected by the numeric gate instead.

@@ -108,8 +108,11 @@ def LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
         o3_ea_code = ea_code
     elif 'store' in base_class_l and not 'cbo' in name_l:
         inst_flags += ('IsKlpStore',)
-        o3_ea_code = f"//{base_class_l}: Generating security tag for stores!\n" + \
-                    secure_tag_gen_code + ea_code 
+        # AUIPC-based scalar/compressed stores complete their credential
+        # using the actual EA, just as loads do after address generation.
+        store_tag_code = secure_tag_gen_code.replace(
+            'this->genSecTag(xc)', 'this->genSecTag(xc, EA, true)')
+        o3_ea_code = ea_code + store_tag_code
     elif 'prefetch' in name_l:
         o3_ea_code = f"//{name_l}: Generating security tag for prefetches!\n" + \
                     secure_tag_gen_code + ea_code 

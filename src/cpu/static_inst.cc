@@ -129,7 +129,7 @@ namespace gem5
 //   return tagVal;
 // }
 uint64_t
-StaticInst::genSecTag(ExecContext *xc) const
+StaticInst::genSecTag(ExecContext *xc, Addr mem_ea, bool mem_ea_valid) const
 {
     assert(xc != nullptr);
     assert(numSrcRegs() > 0);
@@ -148,15 +148,25 @@ StaticInst::genSecTag(ExecContext *xc) const
      * getAddrProvOperand() 会通过 DynInst 的 renamedSrcIdx(0)
      * 读取对应 physical integer register 的 provenance。
      */
-    const AddrProv prov = xc->getAddrProvOperand(this, 0);
-    const CredentialDecision decision = decideCredential(prov);
-
-    /*
-     * genSecTag() 由 O3 的 LQ（load）或 EA code（store）调用。
-     * DynInst 仅用于统计和调试，不参与 provenance 提取。
-     */
+    AddrProv prov = xc->getAddrProvOperand(this, 0);
     auto *inst = dynamic_cast<gem5::o3::DynInst *>(xc);
     assert(inst != nullptr);
+    // Loads generate their key after their EA is available in the LQ.
+    // Stores pass the local scalar EA before initiating their memory request.
+    if (prov.auipcPending && (inst->isKlpLoad() || inst->isKlpStore())) {
+        if (!mem_ea_valid && inst->isKlpLoad() && inst->effAddrValid()) {
+            mem_ea = inst->effAddr;
+            mem_ea_valid = true;
+        }
+        if (mem_ea_valid) {
+            prov = completeAuipcAddrProv(prov, mem_ea,
+                                        inst->pcState().instAddr());
+        }
+    }
+    // Diagnostics must describe the credential actually hashed for this
+    // access, including direct AUIPC + memory-immediate completion.
+    inst->klpKeyProvenance = prov;
+    const CredentialDecision decision = decideCredential(prov);
 
     // The LQ generates a load key once per dynamic execution attempt.
     // Authorization can precede key generation, so uncondi loads count too.

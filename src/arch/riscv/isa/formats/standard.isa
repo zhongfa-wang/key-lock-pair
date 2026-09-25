@@ -449,6 +449,18 @@ def template CSRExecute {{
 
 let {{
     def annotateAddrProv(iop, name):
+        # Separate ISA semantics from provenance diagnostic origin. The
+        # KLP propagation policy consumes these annotations during execution.
+        value_ops = {
+            'auipc': 'Auipc', 'addi': 'AddImmediate',
+            'c_addi': 'AddImmediate', 'c_addi4spn': 'AddImmediate',
+            'c_addi16sp': 'AddImmediate',
+            'add': 'PlainAdd', 'c_add': 'PlainAdd', 'c_mv': 'Copy',
+            'or': 'Or', 'c_or': 'Or', 'xor': 'Xor', 'c_xor': 'Xor',
+        }
+        if name in value_ops:
+            iop.constructor += ('\naddrProvValueOp = AddrProvValueOp::' +
+                                value_ops[name] + ';\n')
         # Constants retain the original ISA seeds. Other single-source
         # operations preserve provenance through the Default rule.
         if name in ('addi', 'addiw'):
@@ -461,7 +473,7 @@ let {{
                       'sh2add_uw', 'sh3add_uw'):
             rule = 'ScaledIndexBasePreserve'
         elif name == 'add_uw':
-            rule = 'ScaledIndexBase'
+            rule = 'ScaledIndexBasePreserve'
         elif name in ('and', 'or', 'xor', 'c_and', 'c_or', 'c_xor'):
             rule = 'PreserveSelected'
         elif name in ('andi', 'ori', 'ori_hint', 'xori', 'c_andi',

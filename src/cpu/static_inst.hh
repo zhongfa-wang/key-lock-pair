@@ -102,6 +102,7 @@ class StaticInst : public RefCounted, public StaticInstFlags
   protected:
 
     AddrProvRule addrProvRule = AddrProvRule::Default;
+    AddrProvValueOp addrProvValueOp = AddrProvValueOp::Other;
 
     /// Flag values for this instruction.
     std::bitset<Num_Flags> flags;
@@ -300,9 +301,11 @@ class StaticInst : public RefCounted, public StaticInstFlags
             
     // [klp] {
     AddrProvRule getAddrProvRule() const { return addrProvRule; }
+    AddrProvValueOp getAddrProvValueOp() const { return addrProvValueOp; }
 
     // Generate security tag return a uint32_t value
-    uint64_t genSecTag(ExecContext *xc) const;
+    uint64_t genSecTag(ExecContext *xc, Addr mem_ea = 0,
+                       bool mem_ea_valid = false) const;
     bool isKlpLoad() const {return flags[IsKlpLoad];}
     bool isKlpStore() const {return flags[IsKlpStore];}
     virtual bool isOffsetZero() const {

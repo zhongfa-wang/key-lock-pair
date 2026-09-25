@@ -475,6 +475,59 @@ DynInst::updateAddrProv()
             }
             break;
         }
+        // Ordinary ADD and compressed C.ADD retain selected known provenance;
+        // word operations, ADDI, SUB, ADD.UW and SHnADD are not included.
+        const AddrProvValueOp value_op = staticInst->getAddrProvValueOp();
+        if (cpu->isKlpEnabled() && xlen == 64 &&
+            value_op == AddrProvValueOp::PlainAdd && numSrcRegs() == 2) {
+            const RegVal lhs = source_value(0), rhs = source_value(1);
+            dest_prov = selectAddrProvPreserving(
+                lhs, source_prov(0), rhs, source_prov(1), xlen, producer_pc);
+            const bool tie = addrProvMagnitude(lhs, xlen) ==
+                             addrProvMagnitude(rhs, xlen);
+            const AddrProv selected = source_prov(
+                addrProvMagnitude(lhs, xlen) > addrProvMagnitude(rhs, xlen)
+                    ? 0 : 1);
+            fresh_origin = tie || (selected.state != AddrProv::State::WEAK &&
+                                   selected.state != AddrProv::State::STRONG);
+        }
+        if (cpu->isKlpEnabled()) {
+            const RegVal result = cpu->getRegNoStats(renamedDestIdx(0));
+            dest_prov.auipcPending = false;
+            if (value_op == AddrProvValueOp::Auipc) {
+                dest_prov.auipcPending = true;
+            } else if (value_op == AddrProvValueOp::AddImmediate &&
+                       numSrcRegs() == 1 && source_prov(0).auipcPending) {
+                const AddrProv source = source_prov(0);
+                if (result == source_value(0)) {
+                    // ADDI 0 is also the standard uncompressed MV. Keep
+                    // the pending marker until an actual address completion.
+                    dest_prov = copyAddrProvValue(source);
+                    fresh_origin = false;
+                } else {
+                    dest_prov = completeAuipcAddrProv(source, result, producer_pc);
+                    fresh_origin = true;
+                }
+            } else {
+                int copied = -1;
+                if (value_op == AddrProvValueOp::Copy && numSrcRegs() == 1 &&
+                    result == source_value(0)) {
+                    copied = 0;
+                } else if ((value_op == AddrProvValueOp::PlainAdd ||
+                            value_op == AddrProvValueOp::Or ||
+                            value_op == AddrProvValueOp::Xor) &&
+                           numSrcRegs() == 2) {
+                    if (source_value(1) == 0 && result == source_value(0))
+                        copied = 0;
+                    else if (source_value(0) == 0 && result == source_value(1))
+                        copied = 1;
+                }
+                if (copied >= 0 && source_prov(copied).auipcPending) {
+                    dest_prov = copyAddrProvValue(source_prov(copied));
+                    fresh_origin = false;
+                }
+            }
+        }
         step_reason = dest_prov.origin;
     }
 
