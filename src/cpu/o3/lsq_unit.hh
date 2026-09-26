@@ -286,7 +286,10 @@ class LSQUnit
 
     /** Release buffered data, or wake a key-blocked STLF, upon authorization. */
     void grantKlpUncondi(const DynInstPtr &inst);
-    void processKlpInstallEvents();
+    void processKlpInstallEvents(bool before_writeback = false,
+                                 unsigned *recheck_budget = nullptr);
+    bool preannounceKlpInstallEvents(InstSeqNum youngest_inst,
+                                    unsigned &broadcast_budget);
     void noteKlpSquash(InstSeqNum after);
 
 
@@ -410,11 +413,24 @@ class LSQUnit
         SQEntry *store = nullptr;
     };
     std::vector<KlpInstallEvent> klpInstallEvents;
+    // Irrevocable retirement events already announced by the early path.
+    InstSeqNum klpEarlyEventSeq = 0;
+    // Same-tick late service is required even if preview suppressed all events.
+    bool klpEarlyRechecksPending = false;
+    // The scalar fast path has two translated-fragment/granule slots per load.
+    unsigned klpScalarBroadcasts(LSQRequest *request) const;
     bool klpStoreInstall = false;
     unsigned klpPendingWritebacks = 0;
     InstSeqNum klpSquashAfter = std::numeric_limits<InstSeqNum>::max();
     void queueKlpInstallEvent(const DynInstPtr &inst, LSQRequest *request,
-                              SQEntry *store = nullptr);
+                              SQEntry *store = nullptr, bool early = false);
+    bool klpStoreInstallEventEligible(SQEntry &entry) const;
+    bool klpStoreHasInterveningWriter(const KlpInstallEvent &event,
+                                    const DynInstPtr &load,
+                                    LSQRequest *request);
+    bool klpStoreDisjointMetadata(const KlpInstallEvent &event,
+                                  const DynInstPtr &load,
+                                  LSQRequest *request);
     bool klpEventTarget(const DynInstPtr &inst, LSQRequest *request) const;
     bool klpStoreCanForward(const KlpInstallEvent &event,
                            const DynInstPtr &load, LSQRequest *request);
@@ -609,6 +625,20 @@ class LSQUnit
         statistics::Scalar klpEventReleasedLoads;
         statistics::Scalar klpEventStoreForwards;
         statistics::Scalar klpWritebackRetries;
+        statistics::Scalar klpEarlyWidthFallbacks;
+        statistics::Scalar klpEarlyShapeFallbacks;
+        statistics::Scalar klpEarlyRecheckDeferred;
+        statistics::Scalar klpDisjointShapeRejected;
+        statistics::Scalar klpEarlyBatches;
+        statistics::Scalar klpEarlyEvents;
+        statistics::Scalar klpEarlyReadyRechecks;
+        statistics::Scalar klpEarlyReadyReleases;
+        statistics::Scalar klpEarlySameCycleWritebacks;
+        statistics::Scalar klpDisjointCandidates;
+        statistics::Scalar klpDisjointWriterBlocked;
+        statistics::Scalar klpDisjointUpdates;
+        statistics::Scalar klpDisjointRechecks;
+        statistics::Scalar klpDisjointReleasedLoads;
 
 
         /** Total number of squashed loads. */

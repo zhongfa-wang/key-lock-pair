@@ -256,6 +256,17 @@ LSQ::processKlpInstallEvents(ThreadID tid)
 }
 
 void
+LSQ::processEarlyKlpInstallEvents(InstSeqNum youngest_inst, ThreadID tid,
+                                unsigned &broadcast_budget,
+                                unsigned &recheck_budget)
+{
+    if (thread.at(tid).preannounceKlpInstallEvents(
+            youngest_inst, broadcast_budget)) {
+        thread.at(tid).processKlpInstallEvents(true, &recheck_budget);
+    }
+}
+
+void
 LSQ::noteKlpSquash(InstSeqNum after, ThreadID tid)
 {
     thread.at(tid).noteKlpSquash(after);

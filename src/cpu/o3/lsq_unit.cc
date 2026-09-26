@@ -273,6 +273,10 @@ bool
 LSQUnit::validateKlpLoad(const DynInstPtr &inst, LSQRequest *request,
                        bool recheck)
 {
+    const bool disjoint_update = request->klpDisjointPending;
+    request->klpDisjointPending = false;
+    if (disjoint_update)
+        ++stats.klpDisjointRechecks;
     if (recheck) {
         ++stats.klpRechecks;
     } else {
@@ -330,6 +334,8 @@ LSQUnit::validateKlpLoad(const DynInstPtr &inst, LSQRequest *request,
         }
     }
     const bool passed = !invalid && !mismatch;
+    if (passed && !inst->isUncondi() && disjoint_update)
+        ++stats.klpDisjointReleasedLoads;
     diag.lastCheckOutcome = passed ? 0 :
         (invalid ? (mismatch ? 5 : 3) : 4);
     if (!recheck)
@@ -413,6 +419,7 @@ LSQUnit::noteKlpSquash(InstSeqNum after)
             entry.request()->klpLockView.clear();
             entry.request()->klpForwardData.clear();
             entry.request()->klpEventTouched = false;
+            entry.request()->klpDisjointPending = false;
         }
     }
 }
@@ -436,8 +443,13 @@ LSQUnit::klpEventTarget(const DynInstPtr &inst, LSQRequest *request) const
 
 void
 LSQUnit::queueKlpInstallEvent(const DynInstPtr &inst, LSQRequest *request,
-                             SQEntry *store)
+                             SQEntry *store, bool early)
 {
+    // The normal late commit walks still enqueue physical metadata writes.
+    // Their event alone is redundant after this irrevocable early batch.
+    if (cpu->params().klpEarlyInstallEvents && !early &&
+        inst->seqNum <= klpEarlyEventSeq)
+        return;
     KlpInstallEvent event;
     event.seq = inst->seqNum;
     event.key = inst->getSecTagInDynInst();
@@ -448,10 +460,237 @@ LSQUnit::queueKlpInstallEvent(const DynInstPtr &inst, LSQRequest *request,
                                 req->isSecure()});
     }
     klpInstallEvents.push_back(std::move(event));
+    if (early)
+        ++stats.klpEarlyEvents;
     if (store)
         ++stats.klpStoreInstallEvents;
     else
         ++stats.klpLoadInstallEvents;
+}
+
+bool
+LSQUnit::klpStoreInstallEventEligible(SQEntry &entry) const
+{
+    const auto &inst = entry.instruction();
+    if (!klpStoreInstall || !inst->isKlpStore() ||
+        !inst->isCommitted() || inst->isSquashed() ||
+        inst->fault != NoFault || inst->isStoreConditional() ||
+        inst->isAtomic() || inst->inHtmTransactionalState() ||
+        inst->getIsBaseUnknown() != triStateVal::FALSE ||
+        !entry.size() || !entry.hasRequest())
+        return false;
+    const auto &req = entry.request()->mainReq();
+    return !req->isUncacheable() && !req->isStrictlyOrdered() &&
+        !req->isLocalAccess() && !req->isCacheMaintenance() &&
+        !req->isMasked() && !req->isLLSC();
+}
+
+unsigned
+LSQUnit::klpScalarBroadcasts(LSQRequest *request) const
+{
+    // RV64 scalar data and at most two physical fragments / lock granules.
+    // Count fragment-granule records separately even if they alias: each
+    // occupies a broadcast lane. Zero means unsupported, not a free update.
+    if (!request || !request->isTranslationComplete() ||
+        !request->_size || request->_size > 8 || request->_reqs.empty() ||
+        request->_reqs.size() > 2)
+        return 0;
+    const unsigned granularity = cpu->getParaTagGranularity();
+    if (!granularity)
+        return 0;
+    unsigned records = 0;
+    uint64_t bytes = 0;
+    for (const auto &req : request->_reqs) {
+        if (!req->hasPaddr() || !req->getSize())
+            return 0;
+        const Addr start = req->getPaddr();
+        const Addr end = start + req->getSize() - 1;
+        if (end < start)
+            return 0;
+        bytes += req->getSize();
+        records += end / granularity - start / granularity + 1;
+        if (records > 2)
+            return 0;
+    }
+    return bytes == request->_size ? records : 0;
+}
+
+bool
+LSQUnit::preannounceKlpInstallEvents(InstSeqNum youngest_inst,
+                                   unsigned &broadcast_budget)
+{
+    assert(cpu->params().klpEarlyInstallEvents);
+    if (youngest_inst <= klpEarlyEventSeq)
+        return false;
+    assert(klpInstallEvents.empty());
+
+    // Probe the entire batch before mutating a lock view. A prefix must not
+    // release data with a key superseded by a later event in the same batch.
+    // No extra event FIFO: an oversized batch uses the existing late path.
+    unsigned records = 0;
+    bool unsupported = false;
+    const auto account = [&](LSQRequest *request) {
+        const unsigned n = klpScalarBroadcasts(request);
+        unsupported |= n == 0;
+        records += n;
+    };
+    for (auto &entry : storeQueue) {
+        const auto &inst = entry.instruction();
+        if (inst->seqNum > youngest_inst)
+            break;
+        if (!entry.canWB() && klpStoreInstallEventEligible(entry))
+            account(entry.request());
+    }
+    for (auto &entry : loadQueue) {
+        const auto &inst = entry.instruction();
+        if (inst->seqNum > youngest_inst)
+            break;
+        if (inst->klpNeedsInstall && !inst->isSquashed() &&
+            inst->fault == NoFault) {
+            assert(inst->isCommitted() && inst->isUncondi());
+            assert(entry.hasRequest());
+            assert(inst->getIsBaseUnknown() == triStateVal::FALSE);
+            account(entry.request());
+        }
+    }
+    // Bound the parallel destination CAM too, including split loads. A
+    // non-scalar live target conservatively sends the whole batch late.
+    if (records && !unsupported) {
+        for (auto &entry : loadQueue) {
+            if (klpEventTarget(entry.instruction(), entry.request()) &&
+                !klpScalarBroadcasts(entry.request())) {
+                unsupported = true;
+                break;
+            }
+        }
+    }
+    if (unsupported) {
+        ++stats.klpEarlyShapeFallbacks;
+        return false;
+    }
+    if (records > broadcast_budget) {
+        ++stats.klpEarlyWidthFallbacks;
+        return false;
+    }
+    if (!records) {
+        klpEarlyEventSeq = youngest_inst;
+        return false;
+    }
+    broadcast_budget -= records;
+    // The SQ sources remain alive until this complete batch is consumed.
+    // This does not grant store permission, dequeue entries or return credit.
+    for (auto &entry : storeQueue) {
+        const auto &inst = entry.instruction();
+        if (inst->seqNum > youngest_inst)
+            break;
+        if (!entry.canWB() && klpStoreInstallEventEligible(entry))
+            queueKlpInstallEvent(inst, entry.request(), &entry, true);
+    }
+    for (auto &entry : loadQueue) {
+        const auto &inst = entry.instruction();
+        if (inst->seqNum > youngest_inst)
+            break;
+        if (inst->klpNeedsInstall && !inst->isSquashed() &&
+            inst->fault == NoFault)
+            queueKlpInstallEvent(inst, entry.request(), nullptr, true);
+    }
+    klpEarlyEventSeq = youngest_inst;
+    ++stats.klpEarlyBatches;
+    return true;
+}
+
+bool
+LSQUnit::klpStoreHasInterveningWriter(const KlpInstallEvent &event,
+                                   const DynInstPtr &load,
+                                   LSQRequest *request)
+{
+    const Addr start = request->mainReq()->getVaddr();
+    const unsigned size = request->mainReq()->getSize();
+    // A newer partial/unknown/special writer also blocks the older source.
+    // Include sent stores: their SQ entries remain live until completion.
+    for (auto &entry : storeQueue) {
+        const auto &inst = entry.instruction();
+        if (inst->seqNum <= event.seq)
+            continue;
+        if (inst->seqNum >= load->seqNum)
+            break;
+        if (!inst->effAddrValid() || !entry.hasRequest())
+            return true;
+        if (entry.size() && inst->effAddr < start + size &&
+            start < inst->effAddr + entry.size())
+            return true;
+        for (const auto &other : entry.request()->_reqs) {
+            if (!other->hasPaddr())
+                return true;
+            for (const auto &load_req : request->_reqs) {
+                if (!load_req->hasPaddr())
+                    return true;
+                if (other->isSecure() == load_req->isSecure() &&
+                    other->getPaddr() < load_req->getPaddr() +
+                        load_req->getSize() &&
+                    load_req->getPaddr() < other->getPaddr() +
+                        other->getSize())
+                    return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool
+LSQUnit::klpStoreDisjointMetadata(const KlpInstallEvent &event,
+                                 const DynInstPtr &load,
+                                 LSQRequest *request)
+{
+    // Use the existing exclusive SQ boundary saved at load insertion. The
+    // full iterator includes the circular-queue generation, not just an index.
+    // Restricting the source to the nearest older store proves there is no
+    // intervening writer without adding an event x LQ x SQ address CAM.
+    if (!klpScalarBroadcasts(request) ||
+        !klpScalarBroadcasts(event.store->request())) {
+        ++stats.klpDisjointShapeRejected;
+        return false;
+    }
+    if (!(event.store->instruction()->sqIt + 1 == load->sqIt)) {
+        ++stats.klpDisjointWriterBlocked;
+        return false;
+    }
+    // Every load fragment must be translated, and NO store byte may overlap
+    // any load byte. Merely finding one disjoint pair is not sufficient for
+    // split requests. A metadata grant cannot authenticate changed data.
+    if (request->_reqs.empty() || event.ranges.empty())
+        return false;
+    const unsigned granularity = cpu->getParaTagGranularity();
+    bool shared_granule = false;
+    uint64_t translated_size = 0;
+    for (const auto &req : request->_reqs) {
+        if (!req->hasPaddr() || !req->getSize())
+            return false;
+        translated_size += req->getSize();
+        const Addr load_start = req->getPaddr();
+        const Addr load_end = load_start + req->getSize() - 1;
+        if (load_end < load_start)
+            return false;
+        for (const auto &range : event.ranges) {
+            if (!range.size)
+                return false;
+            const Addr store_end = range.addr + range.size - 1;
+            if (store_end < range.addr)
+                return false;
+            if (range.secure != req->isSecure())
+                continue;
+            if (load_start <= store_end && range.addr <= load_end)
+                return false;
+            shared_granule |= load_start / granularity <=
+                store_end / granularity && range.addr / granularity <=
+                load_end / granularity;
+        }
+    }
+    if (translated_size != request->_size || !shared_granule)
+        return false;
+    ++stats.klpDisjointCandidates;
+    return true;
 }
 
 bool
@@ -466,34 +705,8 @@ LSQUnit::klpStoreCanForward(const KlpInstallEvent &event,
         start - store_start > source.size() - size)
         return false;
 
-    // A newer partial/unknown/special writer also blocks the older source.
-    // Include sent stores: their SQ entries remain live until completion.
-    for (auto &entry : storeQueue) {
-        const auto &inst = entry.instruction();
-        if (inst->seqNum <= event.seq)
-            continue;
-        if (inst->seqNum >= load->seqNum)
-            break;
-        if (!inst->effAddrValid() || !entry.hasRequest())
-            return false;
-        if (entry.size() && inst->effAddr < start + size &&
-            start < inst->effAddr + entry.size())
-            return false;
-        for (const auto &other : entry.request()->_reqs) {
-            if (!other->hasPaddr())
-                return false;
-            for (const auto &load_req : request->_reqs) {
-                if (!load_req->hasPaddr())
-                    return false;
-                if (other->isSecure() == load_req->isSecure() &&
-                    other->getPaddr() < load_req->getPaddr() +
-                        load_req->getSize() &&
-                    load_req->getPaddr() < other->getPaddr() +
-                        other->getSize())
-                    return false;
-            }
-        }
-    }
+    if (klpStoreHasInterveningWriter(event, load, request))
+        return false;
 
     // Match actual bytes and security domain as well as the virtual STLF
     // range, including non-contiguous physical pages in a split request.
@@ -530,10 +743,14 @@ LSQUnit::klpStoreCanForward(const KlpInstallEvent &event,
 }
 
 void
-LSQUnit::processKlpInstallEvents()
+LSQUnit::processKlpInstallEvents(bool before_writeback,
+                               unsigned *recheck_budget)
 {
-    if (klpInstallEvents.empty())
+    assert(!before_writeback || recheck_budget);
+    if (klpInstallEvents.empty() && !klpEarlyRechecksPending)
         return;
+    if (!before_writeback)
+        klpEarlyRechecksPending = false;
     std::sort(klpInstallEvents.begin(), klpInstallEvents.end(),
         [](const KlpInstallEvent &a, const KlpInstallEvent &b) {
             return a.seq < b.seq;
@@ -552,10 +769,17 @@ LSQUnit::processKlpInstallEvents()
                 continue;
             // Fully sent or buffered reads have no queued IQ port retry.
             // Never create a second completion for a partially sent request.
-            if (event.store &&
-                (!(request->isComplete() || request->isSent()) ||
-                 !klpStoreCanForward(event, inst, request)))
-                continue;
+            bool disjoint_metadata = false;
+            if (event.store) {
+                if (!(request->isComplete() || request->isSent()))
+                    continue;
+                if (!klpStoreCanForward(event, inst, request)) {
+                    disjoint_metadata = cpu->params().klpDisjointStoreMetadata &&
+                        klpStoreDisjointMetadata(event, inst, request);
+                    if (!disjoint_metadata)
+                        continue;
+                }
+            }
             bool touched = false;
             for (const auto &req : request->_reqs) {
                 if (!req->hasPaddr() || !req->getSize())
@@ -579,7 +803,11 @@ LSQUnit::processKlpInstallEvents()
                 continue;
             request->klpEventTouched = true;
             ++stats.klpEventLoadMatches;
-            if (event.store) {
+            if (disjoint_metadata) {
+                request->klpDisjointPending = true;
+                ++stats.klpDisjointUpdates;
+            }
+            if (event.store && !disjoint_metadata) {
                 // Do not authenticate the old cache bytes with a store key.
                 // This private copy cannot be overwritten by late responses.
                 request->klpForwardData.resize(request->_size);
@@ -605,6 +833,15 @@ LSQUnit::processKlpInstallEvents()
             continue;
         if (!request->isComplete() && request->klpForwardData.empty())
             continue;
+        if (before_writeback) {
+            if (!*recheck_budget) {
+                klpEarlyRechecksPending = true;
+                ++stats.klpEarlyRecheckDeferred;
+                continue;
+            }
+            --*recheck_budget;
+            ++stats.klpEarlyReadyRechecks;
+        }
         request->klpEventTouched = false;
         noteKlpDataReady(inst);
         const bool passed = validateKlpLoad(inst, request, true);
@@ -617,10 +854,17 @@ LSQUnit::processKlpInstallEvents()
         inst->klpNeedsInstall = !passed &&
             inst->getIsBaseUnknown() == triStateVal::FALSE;
         if (passed || inst->isUncondi()) {
-            if (passed && !inst->isUncondi())
+            if (passed && !inst->isUncondi()) {
                 ++stats.klpEventReleasedLoads;
+                if (before_writeback)
+                    ++stats.klpEarlyReadyReleases;
+            }
             finishKlpWait(inst);
-            writebackKlpData(inst, request, true);
+            const bool same_cycle = before_writeback &&
+                iewStage->prepareKlpWriteback();
+            if (same_cycle)
+                ++stats.klpEarlySameCycleWritebacks;
+            writebackKlpData(inst, request, !same_cycle);
         } else if (!inst->klpDataBuffered) {
             inst->klpDataBuffered = true;
             inst->statsUpdated[5] = true;
@@ -897,6 +1141,8 @@ LSQUnit::resetState()
     assert(klpPendingWritebacks == 0);
     assert(klpInstallEvents.empty());
     klpSquashAfter = std::numeric_limits<InstSeqNum>::max();
+    klpEarlyEventSeq = 0;
+    klpEarlyRechecksPending = false;
     storesToWB = 0;
 
     // hardware transactional memory
@@ -976,6 +1222,37 @@ LSQUnit::LSQUnitStats::LSQUnitStats(statistics::Group *parent)
                "Loads selecting installation-event store data for completion"),
       ADD_STAT(klpWritebackRetries, statistics::units::Count::get(),
                "Deferred KLP completions waiting for writeback space"),
+      ADD_STAT(klpEarlyWidthFallbacks, statistics::units::Count::get(),
+               "Complete retirement batches exceeding early broadcast budget"),
+      ADD_STAT(klpEarlyShapeFallbacks, statistics::units::Count::get(),
+               "Complete early batches rejected by scalar fragment limits"),
+      ADD_STAT(klpEarlyRecheckDeferred, statistics::units::Count::get(),
+               "Ready early targets serviced instead in the same tick late path"),
+      ADD_STAT(klpDisjointShapeRejected, statistics::units::Count::get(),
+               "Disjoint fast-path probes rejected by scalar fragment limits"),
+      ADD_STAT(klpEarlyBatches, statistics::units::Count::get(),
+               "Irrevocable retirement batches announced before IEW writeback"),
+      ADD_STAT(klpEarlyEvents, statistics::units::Count::get(),
+               "Load/store installation events announced before IEW writeback"),
+      ADD_STAT(klpEarlyReadyRechecks, statistics::units::Count::get(),
+               "Data-ready loads rechecked during an early retirement batch"),
+      ADD_STAT(klpEarlyReadyReleases, statistics::units::Count::get(),
+               "Speculative data-ready loads validated by an early batch"),
+      ADD_STAT(klpEarlySameCycleWritebacks, statistics::units::Count::get(),
+               "Early-batch completions admitted before this cycle writeback"),
+      ADD_STAT(klpDisjointCandidates, statistics::units::Count::get(),
+               "Store/load pairs sharing a physical granule but no bytes"),
+      ADD_STAT(klpDisjointWriterBlocked, statistics::units::Count::get(),
+               "Disjoint fast-path probes not from the nearest older store"),
+      ADD_STAT(klpDisjointUpdates, statistics::units::Count::get(),
+               "Disjoint store/load pairs updating at least one "
+               "local lock granule"),
+      ADD_STAT(klpDisjointRechecks, statistics::units::Count::get(),
+               "Data-ready validations with a disjoint update since "
+               "previous validation"),
+      ADD_STAT(klpDisjointReleasedLoads, statistics::units::Count::get(),
+               "Speculative loads validated with a disjoint update since "
+               "previous validation"),
       ADD_STAT(squashedLoads, statistics::units::Count::get(),
                "Number of loads squashed"),
       ADD_STAT(ignoredResponses, statistics::units::Count::get(),
@@ -1542,23 +1819,10 @@ LSQUnit::commitStores(InstSeqNum &youngest_inst)
             x.canWB() = true;
 
             ++storesToWB;
-            const auto &inst = x.instruction();
-            // canWB alone is not retirement for SC/AMO. Only ordinary,
-            // irrevocable stores whose cache write really installs a key
-            // may forward an installation event.
-            if (klpStoreInstall && inst->isKlpStore() &&
-                inst->isCommitted() && !inst->isSquashed() &&
-                inst->fault == NoFault && !inst->isStoreConditional() &&
-                !inst->isAtomic() && !inst->inHtmTransactionalState() &&
-                inst->getIsBaseUnknown() == triStateVal::FALSE &&
-                x.size() && x.hasRequest()) {
-                auto *request = x.request();
-                const auto &req = request->mainReq();
-                if (!req->isUncacheable() && !req->isStrictlyOrdered() &&
-                    !req->isLocalAccess() && !req->isCacheMaintenance() &&
-                    !req->isMasked() && !req->isLLSC())
-                    queueKlpInstallEvent(inst, request, &x);
-            }
+            // canWB alone is not retirement for SC/AMO. Share the exact
+            // eligibility rule with the optional early announcement walk.
+            if (klpStoreInstallEventEligible(x))
+                queueKlpInstallEvent(x.instruction(), x.request(), &x);
         }
     }
 }

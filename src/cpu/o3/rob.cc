@@ -145,6 +145,10 @@ ROB::updateInstsToReExec(std::vector<DynInstPtr>& authorized,
     if (!futuristic && threat_model != "spectre")
         return false;
 
+    // Behavioral model of a finite ROB-slot eligibility mask, an older-
+    // control prefix reduction, and at most commitWidth age-priority picks.
+    // This loop does not model a serial SRAM walk or unbounded grant ports.
+    // With retirement bypass, the already-retired prefix is absent here.
     for (const auto &inst : instList[tid]) {
         // Even an executed, correctly predicted branch is still older until
         // retireHead removes it from this list.
@@ -163,6 +167,7 @@ ROB::updateInstsToReExec(std::vector<DynInstPtr>& authorized,
         if (futuristic || authorized.size() == commitWidth)
             break;
     }
+    assert(authorized.size() <= commitWidth);
     return !authorized.empty();
 }
 

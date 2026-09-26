@@ -169,6 +169,23 @@ Commit::CommitStats::CommitStats(CPU *cpu, Commit *commit)
           "The number of insts that evaluated as fail but isn't transient."),
       ADD_STAT(stallCycSum,statistics::units::Count::get(),
           "The total number of stalled cycles due to tag verification."),
+      ADD_STAT(klpPostRetireScans, statistics::units::Count::get(),
+               "Eligible-thread scans by the single post-retirement grant stage"),
+      ADD_STAT(klpPostRetireGrantCycles, statistics::units::Cycle::get(),
+               "Cycles with grants from the single post-retirement stage"),
+      ADD_STAT(klpPostRetireGrants, statistics::units::Count::get(),
+               "All loads authorized by the single post-retirement stage"),
+      ADD_STAT(klpPostRetireGrantsHeld, statistics::units::Count::get(),
+               "Post-retirement grants to data-held loads"),
+      ADD_STAT(klpPostRetireGrantsStlfBlocked, statistics::units::Count::get(),
+               "Post-retirement grants to key-blocked STLF loads"),
+      ADD_STAT(klpPostRetireGrantsOther, statistics::units::Count::get(),
+               "Post-retirement grants before hold or STLF blocking"),
+      ADD_STAT(klpPostRetireBudgetExhausted, statistics::units::Cycle::get(),
+               "Post-retirement cycles using all grant slots; "
+               "does not imply an additional eligible load"),
+      ADD_STAT(klpPostRetireGrantBatchSize, statistics::units::Count::get(),
+               "Loads selected in each nonempty post-retirement grant batch"),
       // [klp] }
       ADD_STAT(commitNonSpecStalls, statistics::units::Count::get(),
                "The number of times commit has been forced to stall to "
@@ -197,6 +214,10 @@ Commit::CommitStats::CommitStats(CPU *cpu, Commit *commit)
     numCommittedDist
         .init(0,commit->commitWidth,1)
         .flags(statistics::pdf);
+
+    klpPostRetireGrantBatchSize
+        .init(0, commit->commitWidth, 1)
+        .flags(statistics::pdf | statistics::nozero);
 
     amos
         .init(cpu->numThreads)
@@ -859,11 +880,18 @@ Commit::commit()
         // If we're not currently squashing, then get instructions.
         getInsts();
 
-        // [klp] {
-        resolveInstsByThreatModel();
-        // } [klp]
+        // One finite-width grant arbitration per cycle. With retirement
+        // bypass enabled, the newly retired prefix is visible to that same
+        // arbitration; no second grant budget or serial rescan is modeled.
+        const bool post_retire_grant = cpu->params().klpPostRetireGrant;
+        if (!post_retire_grant)
+            resolveInstsByThreatModel();
         // Try to commit any instructions.
         commitInsts();
+        // Also arbitrate when nothing retired: a held ROB head requires a
+        // grant before it can write back and become ready to retire.
+        if (post_retire_grant)
+            resolveInstsByThreatModel(true);
     }
 
     //Check for any activity
@@ -900,7 +928,7 @@ Commit::commit()
 
 // [klp] {
 void
-Commit::resolveInstsByThreatModel()
+Commit::resolveInstsByThreatModel(bool after_retire)
 {
     toIEW->instsToReExec.clear();
     if (!cpu->isKlpEnabled())
@@ -921,9 +949,39 @@ Commit::resolveInstsByThreatModel()
             commitStatus[tid] != FetchTrapPending) {
             continue;
         }
+        // Retirement can initiate a trap, PC-event redirect or squash-after.
+        // Pending interrupts alone must NOT suppress the sole grant stage:
+        // handling them may be waiting for an older held load to complete.
+        // Likewise, another SMT thread entering drain cannot block this one.
+        if (after_retire &&
+            (trapSquash[tid] || tcSquash[tid] || thread[tid]->trapPending ||
+             toIEW->commitInfo[tid].squash ||
+             toIEW->commitInfo[tid].robSquashing)) {
+            continue;
+        }
+        if (after_retire)
+            ++stats.klpPostRetireScans;
         if (rob->updateInstsToReExec(toIEW->instsToReExec,
                 rob->readHeadInst(tid), tid, cpu->getParaThreatModel(),
                 commitWidth)) {
+            const auto &authorized = toIEW->instsToReExec;
+            assert(authorized.size() <= commitWidth);
+            if (after_retire) {
+                ++stats.klpPostRetireGrantCycles;
+                stats.klpPostRetireGrants += authorized.size();
+                stats.klpPostRetireGrantBatchSize.sample(authorized.size());
+                if (authorized.size() == commitWidth)
+                    ++stats.klpPostRetireBudgetExhausted;
+                for (const auto &inst : authorized) {
+                    assert(inst->threadNumber == tid);
+                    if (inst->klpDataBuffered)
+                        ++stats.klpPostRetireGrantsHeld;
+                    else if (inst->klpStlfBlocked)
+                        ++stats.klpPostRetireGrantsStlfBlocked;
+                    else
+                        ++stats.klpPostRetireGrantsOther;
+                }
+            }
             nextKlpReplayThread = (tid + 1) % numThreads;
             wroteToTimeBuffer = true;
             return;
@@ -931,6 +989,7 @@ Commit::resolveInstsByThreatModel()
     }
 }
 // } [klp]
+
 void
 Commit::commitInsts()
 {

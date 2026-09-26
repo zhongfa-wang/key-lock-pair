@@ -99,10 +99,13 @@ class ROB
     std::string name() const;
     
     // [klp] {
-    /* Given a head inst, updates the instsToReExec with loads that are needed to
-    be re-executed. Returns a bool: whether writing time buffer.*/
-    bool updateInstsToReExec(std::vector<DynInstPtr>& instsToReExec, DynInstPtr head_inst, 
-                             ThreadID tid, std::string getParaThreatModel, unsigned commitWidth);
+    /** Select at most commitWidth legal, age-ordered load grants.
+     * Models a finite ROB eligibility mask and one bounded grant selector.
+     */
+    bool updateInstsToReExec(std::vector<DynInstPtr>& instsToReExec,
+                            DynInstPtr head_inst, ThreadID tid,
+                            std::string getParaThreatModel,
+                            unsigned commitWidth);
     // } [klp]
 
     /** Sets pointer to the list of active threads.

@@ -503,6 +503,8 @@ class IEW
         * ambiguousLoadNum / tagVeriInstNum
         */
         statistics::Formula ambiguousLoadRate;
+        statistics::Distribution klpEarlyBroadcastsPerCycle;
+        statistics::Distribution klpEarlyRechecksPerCycle;
         // } [klp]
     } iewStats;
 

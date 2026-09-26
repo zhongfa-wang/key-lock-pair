@@ -294,6 +294,8 @@ class LSQ
         std::vector<uint8_t> klpForwardData;
         bool klpResultDelivered = false;
         bool klpEventTouched = false;
+        // Diagnostic association only; never used to authorize a load.
+        bool klpDisjointPending = false;
 
         // [klp] {
         /* Install the uncondi request in LQ.
@@ -736,6 +738,9 @@ class LSQ
     /** Release buffered KLP data or wake a key-blocked STLF attempt. */
     void grantKlpUncondi(const DynInstPtr &inst);
     void processKlpInstallEvents(ThreadID tid);
+    void processEarlyKlpInstallEvents(InstSeqNum youngest_inst, ThreadID tid,
+                                      unsigned &broadcast_budget,
+                                      unsigned &recheck_budget);
     void noteKlpSquash(InstSeqNum after, ThreadID tid);
 
 

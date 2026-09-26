@@ -94,6 +94,11 @@ IEW::IEW(CPU *_cpu, const BaseO3CPUParams &params)
              "\tincrease MaxWidth in src/cpu/o3/limits.hh\n",
              wbWidth, static_cast<int>(MaxWidth));
 
+    fatal_if(params.klpEarlyInstallWidth > 2 * params.commitWidth,
+             "KLP early broadcast width exceeds two records per retire slot");
+    fatal_if(params.klpEarlyRecheckWidth > params.LQEntries,
+             "KLP early recheck width exceeds the configured load queue");
+
     _status = Active;
     exeStatus = Running;
     wbStatus = Idle;
@@ -203,9 +208,15 @@ IEW::IEWStats::IEWStats(CPU *cpu)
     ADD_STAT(
         ambiguousLoadRate,
         statistics::units::Ratio::get(),
-        "Fraction of dynamic KLP loads with AMBIGUOUS EA provenance")
+        "Fraction of dynamic KLP loads with AMBIGUOUS EA provenance"),
+    ADD_STAT(klpEarlyBroadcastsPerCycle, statistics::units::Count::get(),
+        "Early granule broadcast records per active IEW cycle, shared by SMT"),
+    ADD_STAT(klpEarlyRechecksPerCycle, statistics::units::Count::get(),
+        "Early load validations per active IEW cycle, shared by SMT")
     // } [klp]
 {
+    klpEarlyBroadcastsPerCycle.init(0, cpu->params().klpEarlyInstallWidth, 1);
+    klpEarlyRechecksPerCycle.init(0, cpu->params().klpEarlyRecheckWidth, 1);
     // [klp] {
       ambiguousLoadRate.precision(6);
 
@@ -1544,6 +1555,35 @@ IEW::tick()
 
     if (exeStatus != Squashing) {
         executeInsts();
+
+        if (cpu->isKlpEnabled() && cpu->params().klpEarlyInstallEvents) {
+            unsigned broadcast_budget = cpu->params().klpEarlyInstallWidth;
+            unsigned recheck_budget = cpu->params().klpEarlyRecheckWidth;
+            // executeInsts() leaves a cursor for asynchronous completions
+            // after the CPU advances iewQueue. Same-cycle early writebacks
+            // temporarily select a slot in the current buffer; do not leak
+            // that slot index into the next buffer and create holes there.
+            const auto async_wb_cycle = wbCycle;
+            const auto async_wb_num_inst = wbNumInst;
+            for (ThreadID tid : *activeThreads) {
+                const auto &commit_info = fromCommit->commitInfo[tid];
+                if (commit_info.doneSeqNum != 0 &&
+                    !commit_info.squash && !commit_info.robSquashing) {
+                    // Only announce already-irrevocable events here. Keep
+                    // SQ writeback, LQ credits and physical installs at their
+                    // ordinary positions below.
+                    ldstQueue.processEarlyKlpInstallEvents(
+                        commit_info.doneSeqNum, tid,
+                        broadcast_budget, recheck_budget);
+                }
+            }
+            iewStats.klpEarlyBroadcastsPerCycle.sample(
+                cpu->params().klpEarlyInstallWidth - broadcast_budget);
+            iewStats.klpEarlyRechecksPerCycle.sample(
+                cpu->params().klpEarlyRecheckWidth - recheck_budget);
+            wbCycle = async_wb_cycle;
+            wbNumInst = async_wb_num_inst;
+        }
 
         writebackInsts();
 

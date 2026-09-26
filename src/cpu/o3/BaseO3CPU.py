@@ -147,6 +147,21 @@ class BaseO3CPU(BaseCPU):
         "Revalidate younger loads on committed store lock installation; "
         "must match the L1D klp_store_install setting",
     )
+    klpPostRetireGrant = Param.Bool(
+        True, "Arbitrate KLP authorization once, after actual ROB retirement"
+    )
+    klpEarlyInstallEvents = Param.Bool(
+        True, "Broadcast a bounded complete retirement batch before writeback"
+    )
+    klpDisjointStoreMetadata = Param.Bool(
+        True, "Forward disjoint-byte lock metadata from the nearest older store"
+    )
+    klpEarlyInstallWidth = Param.Unsigned(
+        2, "Shared early lock-granule broadcast records per CPU cycle"
+    )
+    klpEarlyRecheckWidth = Param.Unsigned(
+        2, "Shared early load revalidations per CPU cycle"
+    )
     LSQDepCheckShift = Param.Unsigned(
         4, "Number of places to shift addr before check"
     )

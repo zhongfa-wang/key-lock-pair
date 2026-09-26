@@ -135,12 +135,10 @@ class Commit
 
   public:
     // [klp] {
-    /* Fill the insts to be re-executed unconditionally into
-    the toIEW after the rob head is committed (depending on
-    the threat model). */
-    void resolveInstsByThreatModel();
-    /*  scrapped
-    void resolveInstsByThreatModel(DynInstPtr head_inst, ThreadID tid);*/
+    /** Select at most commitWidth legal grants for one thread per cycle.
+     * after_retire adds checks for recovery initiated by this cycle's retire.
+     */
+    void resolveInstsByThreatModel(bool after_retire = false);
 
     // } [klp]
     /** Construct a Commit with the given parameters. */
@@ -497,6 +495,15 @@ class Commit
         /* Stat for the total number of stalled cycles of insts whose
         tag veri was evaluated as failure.*/
         statistics::Scalar stallCycSum;
+        /** Diagnostics for the single post-retirement grant stage. */
+        statistics::Scalar klpPostRetireScans;
+        statistics::Scalar klpPostRetireGrantCycles;
+        statistics::Scalar klpPostRetireGrants;
+        statistics::Scalar klpPostRetireGrantsHeld;
+        statistics::Scalar klpPostRetireGrantsStlfBlocked;
+        statistics::Scalar klpPostRetireGrantsOther;
+        statistics::Scalar klpPostRetireBudgetExhausted;
+        statistics::Distribution klpPostRetireGrantBatchSize;
         // } [klp]
         /** Stat for the total number of times commit has had to stall due
          * to a non-speculative instruction reaching the head of the ROB.
