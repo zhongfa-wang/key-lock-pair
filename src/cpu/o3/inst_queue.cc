@@ -41,6 +41,7 @@
 
 #include "cpu/o3/inst_queue.hh"
 
+#include <algorithm>
 #include <limits>
 #include <vector>
 
@@ -99,7 +100,7 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
       numEntries(params.numIQEntries),
       totalWidth(params.issueWidth),
       commitToIEWDelay(params.commitToIEWDelay),
-      iqStats(cpu, totalWidth),
+      iqStats(cpu, totalWidth, fuPool),
       iqIOStats(cpu)
 {
     assert(fuPool);
@@ -182,7 +183,8 @@ InstructionQueue::name() const
     return cpu->name() + ".iq";
 }
 
-InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
+InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width,
+                                   FUPool *fu_pool)
     : statistics::Group(cpu),
     ADD_STAT(instsAdded, statistics::units::Count::get(),
              "Number of instructions added to the IQ (excludes non-spec)"),
@@ -194,6 +196,16 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
              "Actual issue events excluding KLP replay enqueues"),
     ADD_STAT(klpReplayEnqueues, statistics::units::Count::get(),
              "KLP replay enqueues (not actual issue events)"),
+    ADD_STAT(klpCompareIssued, statistics::units::Count::get(),
+             "KLP operand comparisons reserved at actual integer FU issue"),
+    ADD_STAT(klpCompareNoFUIssues, statistics::units::Count::get(),
+             "Comparison-eligible issues without a physical FU reservation"),
+    ADD_STAT(klpCompareIssuePerCycle, statistics::units::Count::get(),
+             "Comparator reservations per IQ scheduling cycle, shared by SMT"),
+    ADD_STAT(klpCompareIssuedByFU, statistics::units::Count::get(),
+             "Comparator reservations by physical FUPool index"),
+    ADD_STAT(klpCompareUnits, statistics::units::Count::get(),
+             "Physical integer FUs with one attached operand comparator"),
     ADD_STAT(intInstsIssued, statistics::units::Count::get(),
              "Number of integer instructions issued"),
     ADD_STAT(floatInstsIssued, statistics::units::Count::get(),
@@ -228,6 +240,19 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
                 statistics::units::Count, statistics::units::Count>::get(),
              "FU busy rate (busy events/executed inst)")
 {
+    klpCompareIssuePerCycle.init(0, total_width, 1);
+    // A zero-FU pool remains representable for unsupported-instruction tests.
+    // Its placeholder vector element is never charged a reservation.
+    klpCompareIssuedByFU.init(std::max(1, fu_pool->size()))
+        .flags(statistics::total);
+    for (int i = 0; i < fu_pool->size(); ++i)
+        klpCompareIssuedByFU.subname(i, "fu" + std::to_string(i));
+    if (!fu_pool->size())
+        klpCompareIssuedByFU.subname(0, "no_physical_fu");
+    klpCompareUnits.functor([fu_pool] {
+        return fu_pool->klpComparatorCount();
+    });
+
     instsAdded
         .prereq(instsAdded);
 
@@ -402,6 +427,8 @@ InstructionQueue::IQIOStats::IQIOStats(statistics::Group *parent)
 void
 InstructionQueue::resetState()
 {
+    klpCompareLastIssueTick.assign(fuPool->size(), 0);
+    klpCompareReserved.assign(fuPool->size(), false);
     //Initialize thread IQ counts
     for (ThreadID tid = 0; tid < MaxThreads; tid++) {
         count[tid] = 0;
@@ -779,6 +806,7 @@ InstructionQueue::scheduleReadyInsts()
     // This will avoid trying to schedule a certain op class if there are no
     // FUs that handle it.
     int total_issued = 0;
+    unsigned compare_issued = 0;
     ListOrderIt order_it = listOrder.begin();
     ListOrderIt order_end_it = listOrder.end();
 
@@ -838,6 +866,27 @@ InstructionQueue::scheduleReadyInsts()
         // valid FU, then schedule for execution.
         if (idx > FUPool::NoFreeFU || idx == FUPool::NoNeedFU ||
             idx == FUPool::NoCapableFU) {
+            if (cpu->isKlpEnabled() &&
+                issuing_inst->needsKlpOperandCompare()) {
+                if (idx >= 0) {
+                    fatal_if(!fuPool->hasKlpComparator(idx),
+                        "KLP comparison assigned to non-integer FU %d", idx);
+                    fatal_if(klpCompareReserved[idx] &&
+                        klpCompareLastIssueTick[idx] == curTick(),
+                        "KLP comparator on FU %d reserved twice in tick %llu",
+                        idx, static_cast<unsigned long long>(curTick()));
+                    klpCompareReserved[idx] = true;
+                    klpCompareLastIssueTick[idx] = curTick();
+                    issuing_inst->reserveKlpComparator(idx, curTick());
+                    ++compare_issued;
+                    ++iqStats.klpCompareIssued;
+                    ++iqStats.klpCompareIssuedByFU[idx];
+                } else {
+                    // Unsupported/NoNeedFU cases do not invent a comparator.
+                    // DynInst conservatively handles an absent reservation.
+                    ++iqStats.klpCompareNoFUIssues;
+                }
+            }
             if (op_latency == Cycles(1)) {
                 i2e_info->size++;
                 instsToExecute.push_back(issuing_inst);
@@ -920,6 +969,9 @@ InstructionQueue::scheduleReadyInsts()
         }
     }
 
+    // Count input-side reservations at issue time. Multi-cycle operations
+    // issued in different cycles may execute/complete together legitimately.
+    iqStats.klpCompareIssuePerCycle.sample(compare_issued);
     iqStats.numIssuedDist.sample(total_issued);
     iqStats.instsIssued+= total_issued;
 

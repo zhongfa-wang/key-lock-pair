@@ -183,6 +183,10 @@ class FUPool : public SimObject
     /** Returns the total number of FUs. */
     int size() { return numFU; }
 
+    /** One operand comparator accompanies each physical integer FU. */
+    bool hasKlpComparator(int fu_idx) const;
+    unsigned klpComparatorCount() const;
+
     /** Debugging function used to dump FU information. */
     void dump();
 

@@ -18,13 +18,23 @@ constexpr std::array<const char *, NumOrigins> OriginNames = {
     "logical_tie", "scaled_base_selected", "scaled_index_dominant",
     "scaled_magnitude_tie",
     "arithmetic_selected", "strong_seed", "weak_seed", "constant_seed",
-    "load_seed"
+    "load_seed", "both_negative", "compare_unavailable"
 };
 constexpr std::array<const char *, 4> StateNames = {
     "none", "weak", "strong", "ambiguous"
 };
-constexpr std::array<const char *, 3> MagnitudeNames = {
-    "base_larger", "index_larger", "tie"
+constexpr unsigned NumCompareReasons =
+    static_cast<unsigned>(AddrProvCompareReason::NumReasons);
+constexpr std::array<const char *, NumCompareReasons> CompareReasonNames = {
+    "nonnegative_left", "nonnegative_right", "left_negative", "right_negative",
+    "both_negative", "equal", "unsupported_xlen", "missing_operand",
+    "no_execution_unit"
+};
+constexpr std::array<const char *, 3> CompareSelectionNames = {
+    "left", "right", "undecided"
+};
+constexpr std::array<const char *, 5> ScaledComparisonNames = {
+    "base_selected", "index_selected", "equal", "both_negative", "unavailable"
 };
 
 unsigned
@@ -68,18 +78,22 @@ KlpProvStats::KlpProvStats(statistics::Group *parent)
                "Existing diagnostic origins carried by executed instructions"),
       ADD_STAT(unknownProducerByPc, statistics::units::Count::get(),
                "Unknown-result producer PC/opcode/reason; bounded table"),
+      ADD_STAT(inputCompareReasons, statistics::units::Count::get(),
+               "Operand-comparison reasons, once per comparison request"),
+      ADD_STAT(inputCompareSelections, statistics::units::Count::get(),
+               "Operand selections, once per comparison request"),
       ADD_STAT(scaledInputStates, statistics::units::Count::get(),
                "Scaled-index-base input states, index then unscaled base"),
       ADD_STAT(scaledResults, statistics::units::Count::get(),
-               "Scaled comparison results; NONE and inherited bins retained "
-               "for historical comparisons and zero under the current rule"),
-      ADD_STAT(scaledMagnitude, statistics::units::Count::get(),
-               "Raw full-XLEN magnitude outcomes for all shNadd comparisons"),
-      ADD_STAT(scaledUnknownMagnitude, statistics::units::Count::get(),
-               "Raw operand comparison for unknown shNadd outputs; "
-               "base_larger is zero under the current directional rule"),
-      ADD_STAT(scaledUnknownMagnitudeByState, statistics::units::Count::get(),
-               "Unknown shNadd comparison outcomes by input states")
+               "Directional ADD.UW/shNadd results; known includes inherited "
+               "WEAK/STRONG and fresh STRONG; NONE and inherited_ambiguous "
+               "bins remain zero under the current candidate policy"),
+      ADD_STAT(scaledComparison, statistics::units::Count::get(),
+               "Shared operand-comparison outcomes for ADD.UW/shNadd"),
+      ADD_STAT(scaledUnknownComparison, statistics::units::Count::get(),
+               "Shared comparison outcomes for unknown ADD.UW/shNadd outputs"),
+      ADD_STAT(scaledUnknownComparisonByState, statistics::units::Count::get(),
+               "Unknown ADD.UW/shNadd comparison outcomes by input states")
 {
     for (auto *stat : {&checkStates, &holdStates, &stlfBlockedStates}) {
         stat->init(StateNames.size());
@@ -100,19 +114,29 @@ KlpProvStats::KlpProvStats(statistics::Group *parent)
         stat->flags(statistics::total | statistics::nozero);
     }
     resetPcLabels();
+    inputCompareReasons.init(CompareReasonNames.size()).flags(
+        statistics::total | statistics::nozero);
+    inputCompareSelections.init(CompareSelectionNames.size()).flags(
+        statistics::total | statistics::nozero);
+    for (unsigned i = 0; i < CompareReasonNames.size(); ++i)
+        inputCompareReasons.subname(i, CompareReasonNames[i]);
+    for (unsigned i = 0; i < CompareSelectionNames.size(); ++i)
+        inputCompareSelections.subname(i, CompareSelectionNames[i]);
     scaledInputStates.init(16).flags(statistics::total | statistics::nozero);
     scaledResults.init(4).flags(statistics::total | statistics::nozero);
     scaledResults.subname(0, "known");
     scaledResults.subname(1, "none");
     scaledResults.subname(2, "inherited_ambiguous");
     scaledResults.subname(3, "fresh_ambiguous");
-    scaledMagnitude.init(3).flags(statistics::total | statistics::nozero);
-    scaledUnknownMagnitude.init(3).flags(statistics::total | statistics::nozero);
-    scaledUnknownMagnitudeByState.init(48).flags(
+    scaledComparison.init(ScaledComparisonNames.size()).flags(
         statistics::total | statistics::nozero);
-    for (unsigned m = 0; m < 3; ++m) {
-        scaledMagnitude.subname(m, MagnitudeNames[m]);
-        scaledUnknownMagnitude.subname(m, MagnitudeNames[m]);
+    scaledUnknownComparison.init(ScaledComparisonNames.size()).flags(
+        statistics::total | statistics::nozero);
+    scaledUnknownComparisonByState.init(16 * ScaledComparisonNames.size()).flags(
+        statistics::total | statistics::nozero);
+    for (unsigned outcome = 0; outcome < ScaledComparisonNames.size(); ++outcome) {
+        scaledComparison.subname(outcome, ScaledComparisonNames[outcome]);
+        scaledUnknownComparison.subname(outcome, ScaledComparisonNames[outcome]);
     }
     for (unsigned index = 0; index < 4; ++index) {
         for (unsigned base = 0; base < 4; ++base) {
@@ -120,9 +144,11 @@ KlpProvStats::KlpProvStats(statistics::Group *parent)
             const std::string label = std::string("index_") + StateNames[index]
                 + "_base_" + StateNames[base];
             scaledInputStates.subname(pair, label);
-            for (unsigned m = 0; m < 3; ++m) {
-                scaledUnknownMagnitudeByState.subname(pair * 3 + m,
-                    label + "_" + MagnitudeNames[m]);
+            for (unsigned outcome = 0;
+                 outcome < ScaledComparisonNames.size(); ++outcome) {
+                scaledUnknownComparisonByState.subname(
+                    pair * ScaledComparisonNames.size() + outcome,
+                    label + "_" + ScaledComparisonNames[outcome]);
             }
         }
     }
@@ -236,18 +262,36 @@ KlpProvStats::recordProducer(Addr pc, const char *mnemonic,
 }
 
 void
+KlpProvStats::recordComparison(const AddrProvCompare &comparison)
+{
+    const unsigned reason = static_cast<unsigned>(comparison.reason);
+    const unsigned selection = static_cast<unsigned>(comparison.selection);
+    assert(reason < CompareReasonNames.size());
+    assert(selection < CompareSelectionNames.size());
+    ++inputCompareReasons[reason];
+    ++inputCompareSelections[selection];
+}
+
+void
 KlpProvStats::recordScaled(const AddrProv &index, const AddrProv &base,
-                           const AddrProv &result, RegVal index_value,
-                           RegVal base_value, unsigned xlen)
+                           const AddrProv &result,
+                           const AddrProvCompare &comparison)
 {
     const unsigned pair = static_cast<unsigned>(index.state) * 4 +
                           static_cast<unsigned>(base.state);
     ++scaledInputStates[pair];
-    const RegVal index_mag = addrProvMagnitude(index_value, xlen);
-    const RegVal base_mag = addrProvMagnitude(base_value, xlen);
-    const unsigned outcome = base_mag > index_mag ? 0 :
-                             index_mag > base_mag ? 1 : 2;
-    ++scaledMagnitude[outcome];
+    // Consume the same execution comparison used by candidate propagation;
+    // neither recompute operand relations nor count a second request here.
+    unsigned outcome = 4;
+    if (comparison.selection == AddrProvCompareSelection::Right)
+        outcome = 0;
+    else if (comparison.selection == AddrProvCompareSelection::Left)
+        outcome = 1;
+    else if (comparison.reason == AddrProvCompareReason::Equal)
+        outcome = 2;
+    else if (comparison.reason == AddrProvCompareReason::BothNegative)
+        outcome = 3;
+    ++scaledComparison[outcome];
     if (!unavailable(result)) {
         ++scaledResults[0];
         return;
@@ -258,8 +302,9 @@ KlpProvStats::recordScaled(const AddrProv &index, const AddrProv &base,
         // Incoming ambiguity does not survive the new comparison: even a
         // rejected result has a fresh cause and producer PC.
         ++scaledResults[3];
-    ++scaledUnknownMagnitude[outcome];
-    ++scaledUnknownMagnitudeByState[pair * 3 + outcome];
+    ++scaledUnknownComparison[outcome];
+    ++scaledUnknownComparisonByState[
+        pair * ScaledComparisonNames.size() + outcome];
 }
 
 } // namespace o3

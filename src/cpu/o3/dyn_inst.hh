@@ -117,6 +117,10 @@ class DynInst : public ExecContext, public RefCounted
     /** Executes the instruction.*/
     Fault execute();
 
+    // A comparator is a sidecar of the integer FU actually allocated at issue.
+    bool needsKlpOperandCompare() const;
+    void reserveKlpComparator(int fu_idx, Tick issue_tick);
+
     /** Initiates the access.  Only valid for memory operations. */
     Fault initiateAcc();
 
@@ -147,6 +151,24 @@ class DynInst : public ExecContext, public RefCounted
     // [klp] {
     void clearDestAddrProv();
     void updateAddrProv();
+    bool isAddrProvInteger() const;
+    void beginAddrProvCapture();
+    void captureAddrProvOperand(int idx, RegVal value, PhysRegIdPtr reg);
+    void tryAddrProvCompare();
+
+    // Fixed-size EX input/result latches. Capture normal ISA accesses, before
+    // word casts and shifts; never reread the PRF to recover oracle inputs.
+    std::array<RegVal, 2> addrProvInputs{};
+    std::array<AddrProv, 2> addrProvInputMetadata{};
+    std::array<bool, 2> addrProvInputValid{};
+    RegVal addrProvResult = 0;
+    bool addrProvResultValid = false;
+    bool addrProvCapture = false;
+    bool addrProvCompareNeeded = false;
+    bool addrProvCompareValid = false;
+    unsigned addrProvXlen = 0;
+    AddrProvCompare addrProvComparison{};
+    int klpComparatorFu = -1;
     // } [klp]
 
     enum Status
@@ -1183,9 +1205,10 @@ class DynInst : public ExecContext, public RefCounted
     getRegOperand(const StaticInst *si, int idx) override
     {
         const PhysRegIdPtr reg = renamedSrcIdx(idx);
-        if (reg->is(InvalidRegClass))
-            return 0;
-        return cpu->getReg(reg, threadNumber);
+        const RegVal value = reg->is(InvalidRegClass) ? 0 :
+            cpu->getReg(reg, threadNumber);
+        captureAddrProvOperand(idx, value, reg);
+        return value;
     }
 
     void
@@ -1274,6 +1297,10 @@ class DynInst : public ExecContext, public RefCounted
         if (reg->is(InvalidRegClass))
             return;
         cpu->setReg(reg, val, threadNumber);
+        if (addrProvCapture && idx == 0 && reg->is(IntRegClass)) {
+            addrProvResult = val;
+            addrProvResultValid = true;
+        }
         setResult(reg->regClass(), val);
     }
 

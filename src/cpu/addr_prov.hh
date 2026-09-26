@@ -49,6 +49,8 @@ enum class AddrProvOrigin : uint8_t {
     WeakSeed,
     ConstantSeed,
     LoadSeed,
+    BothNegative,
+    CompareUnavailable,
     NumOrigins
 };
 
@@ -148,53 +150,151 @@ propagateBasePreserving(const AddrProv &src)
     return ambiguousAddrProv(0);
 }
 
-/*
- * Interpret the low XLEN bits as a signed integer, but compute its magnitude
- * using unsigned arithmetic so that abs(INT_MIN) is representable as well.
- * Word operations still use the full XLEN, not their 32-bit arithmetic width.
- */
-[[nodiscard]] inline constexpr RegVal
-addrProvMagnitude(RegVal value, unsigned xlen)
+// The comparator selects an operand; it does not select a candidate policy.
+// A single comparison result is shared by propagation and diagnostics.
+enum class AddrProvCompareSelection : uint8_t {
+    Left, Right, Undecided
+};
+
+enum class AddrProvCompareReason : uint8_t {
+    NonnegativeLeft,
+    NonnegativeRight,
+    LeftNegative,
+    RightNegative,
+    BothNegative,
+    Equal,
+    UnsupportedXlen,
+    MissingOperand,
+    NoExecutionUnit,
+    NumReasons
+};
+
+struct AddrProvCompare
 {
-    assert(xlen == 32 || xlen == 64);
+    AddrProvCompareSelection selection = AddrProvCompareSelection::Undecided;
+    AddrProvCompareReason reason = AddrProvCompareReason::UnsupportedXlen;
+    // Diagnostic payload only: the low-XLEN common nonnegative value on a tie.
+    RegVal equalValue = 0;
+
+    [[nodiscard]] constexpr bool decided() const
+    {
+        return selection != AddrProvCompareSelection::Undecided;
+    }
+};
+
+/*
+ * Fixed-width comparator behavior for the integer execution datapath.
+ * Inputs are the already-read/forwarded, original XLEN operands, before any
+ * word truncation or SHnADD shift. One negative input selects the nonnegative
+ * input; two negative inputs are undecided. Nonnegative inputs use an exact
+ * unsigned comparison, with equality also undecided.
+ *
+ * Each bit supplies (equal, left-greater). The high/low group reduction is a
+ * balanced 32- or 64-leaf tree (five or six merge levels), not an absolute-value
+ * oracle. The sign leaf is known equal on this path. This combinational model
+ * assumes a comparator alongside each participating integer execution lane;
+ * it neither performs a register-file read nor models physical timing closure.
+ */
+[[nodiscard]] inline constexpr AddrProvCompare
+compareAddrProvOperands(RegVal lhs, RegVal rhs, unsigned xlen)
+{
+    using Selection = AddrProvCompareSelection;
+    using Reason = AddrProvCompareReason;
+    if (xlen != 32 && xlen != 64)
+        return {Selection::Undecided, Reason::UnsupportedXlen, 0};
+
     const RegVal mask = xlen == 32 ? 0xffffffffULL : ~RegVal{0};
-    const RegVal sign = RegVal{1} << (xlen - 1);
-    value &= mask;
-    return (value & sign) ? (RegVal{0} - value) & mask : value;
+    lhs &= mask;
+    rhs &= mask;
+    const bool lhs_negative = (lhs >> (xlen - 1)) & 1;
+    const bool rhs_negative = (rhs >> (xlen - 1)) & 1;
+    if (lhs_negative && rhs_negative)
+        return {Selection::Undecided, Reason::BothNegative, 0};
+    if (lhs_negative)
+        return {Selection::Right, Reason::LeftNegative, 0};
+    if (rhs_negative)
+        return {Selection::Left, Reason::RightNegative, 0};
+
+    struct BitGroup
+    {
+        bool equal = true;
+        bool leftGreater = false;
+    };
+    BitGroup groups[64] = {};
+    for (unsigned bit = 0; bit < xlen; ++bit) {
+        const bool left = (lhs >> bit) & 1;
+        const bool right = (rhs >> bit) & 1;
+        groups[bit].equal = !(left ^ right);
+        groups[bit].leftGreater = left & !right;
+    }
+    for (unsigned span = 1; span < xlen; span <<= 1) {
+        for (unsigned low = 0; low < xlen; low += span << 1) {
+            const BitGroup lower = groups[low];
+            const BitGroup upper = groups[low + span];
+            groups[low].equal = upper.equal & lower.equal;
+            groups[low].leftGreater = upper.leftGreater |
+                (upper.equal & lower.leftGreater);
+        }
+    }
+    if (groups[0].equal)
+        return {Selection::Undecided, Reason::Equal, lhs};
+    if (groups[0].leftGreater)
+        return {Selection::Left, Reason::NonnegativeLeft, 0};
+    return {Selection::Right, Reason::NonnegativeRight, 0};
+}
+
+// Existing tie-origin names are retained for diagnostic continuity. New
+// undecided causes must not be mislabeled as numerical equality.
+[[nodiscard]] inline constexpr AddrProv
+undecidedAddrProv(const AddrProvCompare &comparison,
+                  AddrProvOrigin tie_origin, Addr producer_pc = 0)
+{
+    assert(!comparison.decided());
+    if (comparison.reason == AddrProvCompareReason::Equal) {
+        return ambiguousAddrProv(comparison.equalValue, tie_origin,
+                                 producer_pc);
+    }
+    return ambiguousAddrProv(0,
+        comparison.reason == AddrProvCompareReason::BothNegative ?
+            AddrProvOrigin::BothNegative : AddrProvOrigin::CompareUnavailable,
+        producer_pc);
 }
 
 /*
- * Each arithmetic operation selects a fresh candidate from its actual
- * inputs. Incoming provenance is deliberately irrelevant: the most recent
- * operation replaces even an AMBIGUOUS candidate. Equal magnitudes cannot
- * distinguish a base from an offset and therefore prohibit key generation.
- * Preserve the winning raw register value. Ties retain their common magnitude.
+ * Default arithmetic creates a fresh candidate from the selected raw input,
+ * independently of its incoming provenance. No candidate policy repeats the
+ * comparator. Equal nonnegative values retain their common diagnostic value;
+ * two-negative and unsupported inputs use a zero AMBIGUOUS payload.
  */
 [[nodiscard]] inline constexpr AddrProv
-selectAddrProvByMagnitude(RegVal lhs, RegVal rhs, unsigned xlen,
-                          Addr producer_pc = 0)
+selectAddrProvByComparison(RegVal lhs, RegVal rhs,
+                           const AddrProvCompare &comparison,
+                           Addr producer_pc = 0)
 {
-    const RegVal lhs_magnitude = addrProvMagnitude(lhs, xlen);
-    const RegVal rhs_magnitude = addrProvMagnitude(rhs, xlen);
-    if (lhs_magnitude == rhs_magnitude)
-        return ambiguousAddrProv(lhs_magnitude,
-                                 AddrProvOrigin::MagnitudeTie, producer_pc);
-    return strongAddrProv(lhs_magnitude > rhs_magnitude ? lhs : rhs,
-                          AddrProvOrigin::ArithmeticSelected, producer_pc);
+    if (!comparison.decided()) {
+        return undecidedAddrProv(comparison, AddrProvOrigin::MagnitudeTie,
+                                 producer_pc);
+    }
+    return strongAddrProv(
+        comparison.selection == AddrProvCompareSelection::Left ? lhs : rhs,
+        AddrProvOrigin::ArithmeticSelected, producer_pc);
 }
 
-// Ordinary ADD preserves known provenance only after the same
-// signed full-XLEN magnitude gate has selected an operand. Ties stay unknown.
+// Ordinary ADD inherits the selected source's candidate AND state only when
+// available. NONE/AMBIGUOUS sources retain the fresh-candidate fallback.
 [[nodiscard]] inline constexpr AddrProv
 selectAddrProvPreserving(RegVal lhs, const AddrProv &lhs_prov,
                          RegVal rhs, const AddrProv &rhs_prov,
-                         unsigned xlen, Addr producer_pc = 0)
+                         const AddrProvCompare &comparison,
+                         Addr producer_pc = 0)
 {
-    const AddrProv fresh = selectAddrProvByMagnitude(lhs, rhs, xlen, producer_pc);
-    if (fresh.state != AddrProv::State::STRONG)
+    const AddrProv fresh = selectAddrProvByComparison(
+        lhs, rhs, comparison, producer_pc);
+    if (!comparison.decided())
         return fresh;
-    const AddrProv &source = addrProvMagnitude(lhs, xlen) >
-        addrProvMagnitude(rhs, xlen) ? lhs_prov : rhs_prov;
+    const AddrProv &source =
+        comparison.selection == AddrProvCompareSelection::Left ?
+            lhs_prov : rhs_prov;
     if (source.state == AddrProv::State::WEAK ||
         source.state == AddrProv::State::STRONG)
         return propagateBasePreserving(source);
@@ -216,62 +316,59 @@ completeAuipcAddrProv(const AddrProv &source, RegVal address, Addr pc = 0)
         propagateBasePreserving(source);
 }
 
-// Register logic selects a source by current operand values, then copies
-// that source's candidate AND state, including NONE and AMBIGUOUS.
+// Register logic copies the selected candidate AND state, including NONE and
+// AMBIGUOUS. Successful comparison does not create a credential for logic.
 [[nodiscard]] inline constexpr AddrProv
-propagateAddrProvByMagnitude(RegVal lhs, const AddrProv &lhs_prov,
-                            RegVal rhs, const AddrProv &rhs_prov,
-                            unsigned xlen, Addr producer_pc = 0)
+propagateAddrProvByComparison(const AddrProv &lhs_prov,
+                             const AddrProv &rhs_prov,
+                             const AddrProvCompare &comparison,
+                             Addr producer_pc = 0)
 {
-    const RegVal lhs_magnitude = addrProvMagnitude(lhs, xlen);
-    const RegVal rhs_magnitude = addrProvMagnitude(rhs, xlen);
-    if (lhs_magnitude == rhs_magnitude)
-        return ambiguousAddrProv(lhs_magnitude,
-                                 AddrProvOrigin::LogicalTie, producer_pc);
+    if (!comparison.decided()) {
+        return undecidedAddrProv(comparison, AddrProvOrigin::LogicalTie,
+                                 producer_pc);
+    }
     return propagateBasePreserving(
-        lhs_magnitude > rhs_magnitude ? lhs_prov : rhs_prov);
+        comparison.selection == AddrProvCompareSelection::Left ?
+            lhs_prov : rhs_prov);
 }
 
 /*
- * Fresh-candidate numeric gate for ADD.UW and
- * SH1/2/3ADD and their .uw forms. Compare the original full-XLEN operands,
- * before any ISA shift or .uw truncation. Only a strictly larger base
- * magnitude creates a credential, regardless of incoming provenance.
- *
- * Preserve raw rs2 on success AND when the index is larger. In the latter
- * case the result is AMBIGUOUS and cannot authorize speculation. Equal
- * magnitudes retain their common absolute value, as ordinary R-type ties do.
+ * ADD.UW and SH1/2/3ADD (including .uw) use a directional gate: the comparison
+ * must select the right operand, rs2. Selecting the index never authorizes a
+ * credential, even when it won because only the base was negative. Preserve
+ * raw rs2 as the diagnostic payload when the index wins.
  */
 [[nodiscard]] inline constexpr AddrProv
-selectAddrScaledBaseByMagnitude(RegVal index_value, RegVal base_value,
-                                unsigned xlen, Addr producer_pc = 0)
+selectAddrScaledBaseByComparison(RegVal base_value,
+                                 const AddrProvCompare &comparison,
+                                 Addr producer_pc = 0)
 {
-    const RegVal index_magnitude = addrProvMagnitude(index_value, xlen);
-    const RegVal base_magnitude = addrProvMagnitude(base_value, xlen);
-    if (base_magnitude > index_magnitude)
+    if (comparison.selection == AddrProvCompareSelection::Right) {
         return strongAddrProv(base_value,
                               AddrProvOrigin::ScaledBaseSelected, producer_pc);
-    if (index_magnitude > base_magnitude)
+    }
+    if (comparison.selection == AddrProvCompareSelection::Left) {
         return ambiguousAddrProv(base_value,
                                  AddrProvOrigin::ScaledIndexDominant, producer_pc);
-    return ambiguousAddrProv(base_magnitude,
-                             AddrProvOrigin::ScaledMagnitudeTie, producer_pc);
+    }
+    return undecidedAddrProv(comparison, AddrProvOrigin::ScaledMagnitudeTie,
+                             producer_pc);
 }
 
 /*
- * ADD.UW, SH1/2/3ADD and their .uw forms use the same directional numeric gate.
  * Only after rs2 wins may its existing WEAK/STRONG provenance be inherited,
- * including its state and diagnostic ancestry. NONE/AMBIGUOUS sources use
- * the fresh STRONG raw-rs2 candidate selected by the numeric gate instead.
- * A known source never overrides an index-dominant or tied rejection.
+ * including candidate, state and diagnostic ancestry. NONE/AMBIGUOUS sources
+ * use the fresh STRONG raw-rs2 candidate. Known provenance never bypasses an
+ * index-selected or undecided comparison.
  */
 [[nodiscard]] inline constexpr AddrProv
-selectAddrScaledBasePreserving(RegVal index_value, RegVal base_value,
-                               const AddrProv &base_prov, unsigned xlen,
+selectAddrScaledBasePreserving(RegVal base_value, const AddrProv &base_prov,
+                               const AddrProvCompare &comparison,
                                Addr producer_pc = 0)
 {
-    const AddrProv selected = selectAddrScaledBaseByMagnitude(
-        index_value, base_value, xlen, producer_pc);
+    const AddrProv selected = selectAddrScaledBaseByComparison(
+        base_value, comparison, producer_pc);
     if (selected.state == AddrProv::State::STRONG &&
         (base_prov.state == AddrProv::State::WEAK ||
          base_prov.state == AddrProv::State::STRONG)) {

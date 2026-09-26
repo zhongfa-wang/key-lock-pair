@@ -317,6 +317,11 @@ class InstructionQueue
     /** Function unit pool. */
     FUPool *fuPool;
 
+    // Audit actual FU input reservations, not deferred execute/completion
+    // calls. Shared by SMT and bounded by the physical FU pool size.
+    std::vector<Tick> klpCompareLastIssueTick;
+    std::vector<bool> klpCompareReserved;
+
     //////////////////////////////////////
     // Instruction lists, ready queues, and ordering
     //////////////////////////////////////
@@ -486,7 +491,7 @@ class InstructionQueue
 
     struct IQStats : public statistics::Group
     {
-        IQStats(CPU *cpu, const unsigned &total_width);
+        IQStats(CPU *cpu, const unsigned &total_width, FUPool *fu_pool);
         /** Stat for number of instructions added. */
         statistics::Scalar instsAdded;
         /** Stat for number of non-speculative instructions added. */
@@ -497,6 +502,12 @@ class InstructionQueue
         statistics::Scalar actualInstsIssued;
         /** KLP replay entries processed for re-enqueue. */
         statistics::Scalar klpReplayEnqueues;
+        /** Comparator reservations follow successful integer FU issues. */
+        statistics::Scalar klpCompareIssued;
+        statistics::Scalar klpCompareNoFUIssues;
+        statistics::Distribution klpCompareIssuePerCycle;
+        statistics::Vector klpCompareIssuedByFU;
+        statistics::Value klpCompareUnits;
         /** Stat for number of integer instructions issued. */
         statistics::Scalar intInstsIssued;
         /** Stat for number of floating point instructions issued. */

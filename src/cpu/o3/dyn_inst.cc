@@ -363,6 +363,102 @@ DynInst::clearDestAddrProv()
         setAddrProvOperand(staticInst.get(), idx, cleared);
 }
 
+bool
+DynInst::isAddrProvInteger() const
+{
+    const bool int_op = opClass() == IntAluOp ||
+                        opClass() == IntMultOp || opClass() == IntDivOp;
+    if (!int_op || !staticInst->isInteger() || staticInst->isMemRef() ||
+        staticInst->isControl() || numDestRegs() != 1 ||
+        !staticInst->destRegIdx(0).is(IntRegClass) || numSrcRegs() > 2)
+        return false;
+    for (int idx = 0; idx < numSrcRegs(); ++idx) {
+        const RegId &src = staticInst->srcRegIdx(idx);
+        if (!src.is(IntRegClass) && !src.is(InvalidRegClass))
+            return false;
+    }
+    return true;
+}
+
+bool
+DynInst::needsKlpOperandCompare() const
+{
+    if (!isAddrProvInteger() || numSrcRegs() != 2)
+        return false;
+    switch (staticInst->getAddrProvRule()) {
+      case AddrProvRule::Default:
+      case AddrProvRule::PreserveSelected:
+      case AddrProvRule::ScaledIndexBase:
+      case AddrProvRule::ScaledIndexBasePreserve:
+        return true;
+      default:
+        return false;
+    }
+}
+
+void
+DynInst::reserveKlpComparator(int fu_idx, Tick issue_tick)
+{
+    // IQ enforces one comparison per physical FU per issue cycle. Scheduling
+    // and FU completion latency are unchanged; a replay needs a new ticket.
+    klpComparatorFu = fu_idx;
+    DPRINTF(KLPDEBUG, "[DynInst] Comparator issue SN: %llu, FU: %d, "
+            "tick: %llu.\n", seqNum, fu_idx, issue_tick);
+}
+
+void
+DynInst::beginAddrProvCapture()
+{
+    addrProvInputValid.fill(false);
+    addrProvResultValid = false;
+    addrProvCompareValid = false;
+    addrProvComparison = {};
+    addrProvXlen = tcBase()->getIsaPtr()->addrProvXlen();
+    addrProvCapture = addrProvXlen != 0 && isAddrProvInteger();
+    addrProvCompareNeeded = addrProvCapture && needsKlpOperandCompare();
+    if (!addrProvCapture)
+        return;
+    // x0 is a hardwired zero, not an extra register-file port. Some ISA
+    // accessors elide its read, so make it available even in that case.
+    for (int idx = 0; idx < numSrcRegs(); ++idx) {
+        if (staticInst->srcRegIdx(idx).is(InvalidRegClass)) {
+            addrProvInputs[idx] = 0;
+            addrProvInputMetadata[idx] =
+                noneAddrProv(AddrProvOrigin::ZeroRegister);
+            addrProvInputValid[idx] = true;
+        }
+    }
+    tryAddrProvCompare();
+}
+
+void
+DynInst::captureAddrProvOperand(int idx, RegVal value, PhysRegIdPtr reg)
+{
+    if (!addrProvCapture || idx < 0 || idx >= 2 || addrProvInputValid[idx])
+        return;
+    addrProvInputs[idx] = value;
+    addrProvInputMetadata[idx] = reg->is(InvalidRegClass) ?
+        noneAddrProv(AddrProvOrigin::ZeroRegister) : cpu->getAddrProv(reg);
+    addrProvInputValid[idx] = true;
+    // Generated scalar ISA execution reads both inputs before doing the ALU
+    // operation. Evaluate the parallel combinational sidecar on these inputs.
+    tryAddrProvCompare();
+}
+
+void
+DynInst::tryAddrProvCompare()
+{
+    if (!addrProvCompareNeeded || addrProvCompareValid ||
+        !addrProvInputValid[0] || !addrProvInputValid[1])
+        return;
+    addrProvComparison = klpComparatorFu >= 0 ?
+        compareAddrProvOperands(addrProvInputs[0], addrProvInputs[1],
+                                addrProvXlen) :
+        AddrProvCompare{AddrProvCompareSelection::Undecided,
+                       AddrProvCompareReason::NoExecutionUnit, 0};
+    addrProvCompareValid = true;
+}
+
 void
 DynInst::updateAddrProv()
 {
@@ -374,160 +470,151 @@ DynInst::updateAddrProv()
     AddrProv dest_prov = noneAddrProv(clear_origin, producer_pc);
     bool fresh_origin = true;
     AddrProvOrigin step_reason = clear_origin;
-    const bool int_op = opClass() == IntAluOp ||
-                        opClass() == IntMultOp || opClass() == IntDivOp;
-    bool eligible = xlen != 0 && fault == NoFault && readPredicate() &&
-        int_op && staticInst->isInteger() && !staticInst->isMemRef() &&
-        !staticInst->isControl() && numDestRegs() == 1 &&
-        staticInst->destRegIdx(0).is(IntRegClass) && numSrcRegs() <= 2;
-
-    for (int idx = 0; eligible && idx < numSrcRegs(); ++idx) {
-        const RegId &src = staticInst->srcRegIdx(idx);
-        // RISC-V represents x0 as InvalidRegClass. It is still an operand,
-        // with value zero, and must not turn a binary operation into a copy.
-        eligible = src.is(IntRegClass) || src.is(InvalidRegClass);
-    }
+    const bool eligible = xlen != 0 && fault == NoFault && readPredicate() &&
+                          isAddrProvInteger();
 
     if (eligible) {
-        // Renamed sources retain full-XLEN input values, even for rd == rs1
-        // or rs2. Oracle reads must not charge simulated register-file reads.
-        const auto source_value = [this](int idx) -> RegVal {
-            const PhysRegIdPtr reg = renamedSrcIdx(idx);
-            return reg->is(InvalidRegClass) ? 0 : cpu->getRegNoStats(reg);
+        const auto source_value = [this](int idx) { return addrProvInputs[idx]; };
+        const auto source_prov = [this](int idx) {
+            return addrProvInputMetadata[idx];
         };
-        const auto source_prov = [this](int idx) -> AddrProv {
-            return renamedSrcIdx(idx)->is(InvalidRegClass) ?
-                noneAddrProv(AddrProvOrigin::ZeroRegister) :
-                getAddrProvOperand(staticInst.get(), idx);
-        };
-        switch (staticInst->getAddrProvRule()) {
-          case AddrProvRule::SeedStrongResult:
-            dest_prov = strongAddrProv(
-                cpu->getRegNoStats(renamedDestIdx(0)),
-                AddrProvOrigin::StrongSeed, producer_pc);
-            break;
-          case AddrProvRule::SeedWeakResult:
-            dest_prov = weakAddrProv(
-                cpu->getRegNoStats(renamedDestIdx(0)),
-                AddrProvOrigin::WeakSeed, producer_pc);
-            break;
-          case AddrProvRule::SeedConstantOrPreserve:
-            // ADDI/ADDIW with x0 materialize a constant. Otherwise they
-            // retain the source candidate, even for word truncation.
-            if (numSrcRegs() == 1) {
-                fresh_origin = staticInst->srcRegIdx(0).is(InvalidRegClass);
-                dest_prov = fresh_origin ?
-                    weakAddrProv(cpu->getRegNoStats(renamedDestIdx(0)),
-                                 AddrProvOrigin::ConstantSeed, producer_pc) :
-                    propagateBasePreserving(source_prov(0));
-            }
-            break;
-          case AddrProvRule::ScaledIndexBase:
-          case AddrProvRule::ScaledIndexBasePreserve:
-            if (numSrcRegs() == 2) {
-                const AddrProv index = source_prov(0);
-                const AddrProv base = source_prov(1);
-                const RegVal index_value = source_value(0);
-                const RegVal base_value = source_value(1);
-                const bool preserve_base = staticInst->getAddrProvRule() ==
-                    AddrProvRule::ScaledIndexBasePreserve;
-                dest_prov = preserve_base ?
-                    selectAddrScaledBasePreserving(index_value, base_value,
-                                                  base, xlen, producer_pc) :
-                    selectAddrScaledBaseByMagnitude(
-                        index_value, base_value, xlen, producer_pc);
-                // Inherited credentials retain their diagnostic ancestry.
-                // Numeric rejection and recovery from an unavailable source
-                // still create a fresh result at this instruction.
-                fresh_origin = !preserve_base ||
-                    base.state == AddrProv::State::NONE ||
-                    base.state == AddrProv::State::AMBIGUOUS ||
-                    dest_prov.state == AddrProv::State::AMBIGUOUS;
-                if (cpu->isKlpEnabled()) {
-                    cpu->klpProvStats.recordScaled(index, base, dest_prov,
-                        index_value, base_value, xlen);
+        bool inputs_valid = addrProvResultValid;
+        for (int idx = 0; idx < numSrcRegs(); ++idx)
+            inputs_valid &= addrProvInputValid[idx];
+        if (addrProvCompareNeeded && !addrProvCompareValid) {
+            addrProvComparison = {AddrProvCompareSelection::Undecided,
+                                  AddrProvCompareReason::MissingOperand, 0};
+        }
+        const AddrProvCompare &comparison = addrProvComparison;
+        if (cpu->isKlpEnabled() && addrProvCompareNeeded)
+            cpu->klpProvStats.recordComparison(comparison);
+        if (!inputs_valid) {
+            dest_prov = ambiguousAddrProv(
+                0, AddrProvOrigin::CompareUnavailable, producer_pc);
+        } else {
+            switch (staticInst->getAddrProvRule()) {
+              case AddrProvRule::SeedStrongResult:
+                dest_prov = strongAddrProv(
+                    addrProvResult,
+                    AddrProvOrigin::StrongSeed, producer_pc);
+                break;
+              case AddrProvRule::SeedWeakResult:
+                dest_prov = weakAddrProv(
+                    addrProvResult,
+                    AddrProvOrigin::WeakSeed, producer_pc);
+                break;
+              case AddrProvRule::SeedConstantOrPreserve:
+                // ADDI/ADDIW with x0 materialize a constant. Otherwise they
+                // retain the source candidate, even for word truncation.
+                if (numSrcRegs() == 1) {
+                    fresh_origin = staticInst->srcRegIdx(0).is(InvalidRegClass);
+                    dest_prov = fresh_origin ?
+                        weakAddrProv(addrProvResult,
+                                     AddrProvOrigin::ConstantSeed, producer_pc) :
+                        propagateBasePreserving(source_prov(0));
                 }
-            }
-            break;
-          case AddrProvRule::PreserveFirst:
-            if (numSrcRegs() >= 1) {
-                dest_prov = propagateBasePreserving(source_prov(0));
-                fresh_origin = false;
-            }
-            break;
-          case AddrProvRule::PreserveSelected:
-            if (numSrcRegs() == 2) {
-                const RegVal lhs = source_value(0);
-                const RegVal rhs = source_value(1);
-                dest_prov = propagateAddrProvByMagnitude(
-                    lhs, source_prov(0), rhs, source_prov(1), xlen, producer_pc);
-                fresh_origin = addrProvMagnitude(lhs, xlen) ==
-                               addrProvMagnitude(rhs, xlen);
-            }
-            break;
-          case AddrProvRule::Default:
-            if (numSrcRegs() == 2) {
-                dest_prov = selectAddrProvByMagnitude(
-                    source_value(0), source_value(1), xlen, producer_pc);
-            } else if (numSrcRegs() == 1) {
-                dest_prov = propagateBasePreserving(source_prov(0));
-                fresh_origin = false;
-            }
-            break;
-        }
-        // Ordinary ADD and compressed C.ADD retain selected known provenance;
-        // word operations, ADDI, SUB, ADD.UW and SHnADD are not included.
-        const AddrProvValueOp value_op = staticInst->getAddrProvValueOp();
-        if (cpu->isKlpEnabled() && xlen == 64 &&
-            value_op == AddrProvValueOp::PlainAdd && numSrcRegs() == 2) {
-            const RegVal lhs = source_value(0), rhs = source_value(1);
-            dest_prov = selectAddrProvPreserving(
-                lhs, source_prov(0), rhs, source_prov(1), xlen, producer_pc);
-            const bool tie = addrProvMagnitude(lhs, xlen) ==
-                             addrProvMagnitude(rhs, xlen);
-            const AddrProv selected = source_prov(
-                addrProvMagnitude(lhs, xlen) > addrProvMagnitude(rhs, xlen)
-                    ? 0 : 1);
-            fresh_origin = tie || (selected.state != AddrProv::State::WEAK &&
-                                   selected.state != AddrProv::State::STRONG);
-        }
-        if (cpu->isKlpEnabled()) {
-            const RegVal result = cpu->getRegNoStats(renamedDestIdx(0));
-            dest_prov.auipcPending = false;
-            if (value_op == AddrProvValueOp::Auipc) {
-                dest_prov.auipcPending = true;
-            } else if (value_op == AddrProvValueOp::AddImmediate &&
-                       numSrcRegs() == 1 && source_prov(0).auipcPending) {
-                const AddrProv source = source_prov(0);
-                if (result == source_value(0)) {
-                    // ADDI 0 is also the standard uncompressed MV. Keep
-                    // the pending marker until an actual address completion.
-                    dest_prov = copyAddrProvValue(source);
+                break;
+              case AddrProvRule::ScaledIndexBase:
+              case AddrProvRule::ScaledIndexBasePreserve:
+                if (numSrcRegs() == 2) {
+                    const AddrProv index = source_prov(0);
+                    const AddrProv base = source_prov(1);
+                    const RegVal base_value = source_value(1);
+                    const bool preserve_base = staticInst->getAddrProvRule() ==
+                        AddrProvRule::ScaledIndexBasePreserve;
+                    dest_prov = preserve_base ?
+                        selectAddrScaledBasePreserving(base_value, base,
+                                                      comparison, producer_pc) :
+                        selectAddrScaledBaseByComparison(
+                            base_value, comparison, producer_pc);
+                    // Inherited credentials retain their diagnostic ancestry.
+                    // Numeric rejection and recovery from an unavailable source
+                    // still create a fresh result at this instruction.
+                    fresh_origin = !preserve_base ||
+                        base.state == AddrProv::State::NONE ||
+                        base.state == AddrProv::State::AMBIGUOUS ||
+                        dest_prov.state == AddrProv::State::AMBIGUOUS;
+                    if (cpu->isKlpEnabled()) {
+                        cpu->klpProvStats.recordScaled(index, base, dest_prov,
+                                                       comparison);
+                    }
+                }
+                break;
+              case AddrProvRule::PreserveFirst:
+                if (numSrcRegs() >= 1) {
+                    dest_prov = propagateBasePreserving(source_prov(0));
                     fresh_origin = false;
+                }
+                break;
+              case AddrProvRule::PreserveSelected:
+                if (numSrcRegs() == 2) {
+                    dest_prov = propagateAddrProvByComparison(
+                        source_prov(0), source_prov(1), comparison, producer_pc);
+                    fresh_origin = !comparison.decided();
+                }
+                break;
+              case AddrProvRule::Default:
+                if (numSrcRegs() == 2) {
+                    dest_prov = selectAddrProvByComparison(
+                        source_value(0), source_value(1), comparison, producer_pc);
+                } else if (numSrcRegs() == 1) {
+                    dest_prov = propagateBasePreserving(source_prov(0));
+                    fresh_origin = false;
+                }
+                break;
+            }
+            // Ordinary ADD and compressed C.ADD retain selected known provenance;
+            // word operations, ADDI, SUB, ADD.UW and SHnADD are not included.
+            const AddrProvValueOp value_op = staticInst->getAddrProvValueOp();
+            if (cpu->isKlpEnabled() && xlen == 64 &&
+                value_op == AddrProvValueOp::PlainAdd && numSrcRegs() == 2) {
+                const RegVal lhs = source_value(0), rhs = source_value(1);
+                dest_prov = selectAddrProvPreserving(
+                    lhs, source_prov(0), rhs, source_prov(1), comparison, producer_pc);
+                const AddrProv selected = source_prov(
+                    comparison.selection == AddrProvCompareSelection::Left ? 0 : 1);
+                fresh_origin = !comparison.decided() ||
+                                      (selected.state != AddrProv::State::WEAK &&
+                                       selected.state != AddrProv::State::STRONG);
+            }
+            if (cpu->isKlpEnabled()) {
+                const RegVal result = addrProvResult;
+                dest_prov.auipcPending = false;
+                if (value_op == AddrProvValueOp::Auipc) {
+                    dest_prov.auipcPending = true;
+                } else if (value_op == AddrProvValueOp::AddImmediate &&
+                           numSrcRegs() == 1 && source_prov(0).auipcPending) {
+                    const AddrProv source = source_prov(0);
+                    if (result == source_value(0)) {
+                        // ADDI 0 is also the standard uncompressed MV. Keep
+                        // the pending marker until an actual address completion.
+                        dest_prov = copyAddrProvValue(source);
+                        fresh_origin = false;
+                    } else {
+                        dest_prov = completeAuipcAddrProv(source, result, producer_pc);
+                        fresh_origin = true;
+                    }
                 } else {
-                    dest_prov = completeAuipcAddrProv(source, result, producer_pc);
-                    fresh_origin = true;
-                }
-            } else {
-                int copied = -1;
-                if (value_op == AddrProvValueOp::Copy && numSrcRegs() == 1 &&
-                    result == source_value(0)) {
-                    copied = 0;
-                } else if ((value_op == AddrProvValueOp::PlainAdd ||
-                            value_op == AddrProvValueOp::Or ||
-                            value_op == AddrProvValueOp::Xor) &&
-                           numSrcRegs() == 2) {
-                    if (source_value(1) == 0 && result == source_value(0))
+                    int copied = -1;
+                    if (value_op == AddrProvValueOp::Copy && numSrcRegs() == 1 &&
+                        result == source_value(0)) {
                         copied = 0;
-                    else if (source_value(0) == 0 && result == source_value(1))
-                        copied = 1;
-                }
-                if (copied >= 0 && source_prov(copied).auipcPending) {
-                    dest_prov = copyAddrProvValue(source_prov(copied));
-                    fresh_origin = false;
+                    } else if ((value_op == AddrProvValueOp::PlainAdd ||
+                                value_op == AddrProvValueOp::Or ||
+                                value_op == AddrProvValueOp::Xor) &&
+                               numSrcRegs() == 2) {
+                        if (source_value(1) == 0 && result == source_value(0))
+                            copied = 0;
+                        else if (source_value(0) == 0 && result == source_value(1))
+                            copied = 1;
+                    }
+                    if (copied >= 0 && source_prov(copied).auipcPending) {
+                        dest_prov = copyAddrProvValue(source_prov(copied));
+                        fresh_origin = false;
+                    }
                 }
             }
-        }
+        } // Captured inputs and result are available.
         step_reason = dest_prov.origin;
     }
 
@@ -537,7 +624,7 @@ DynInst::updateAddrProv()
     if (eligible) {
         setAddrProvOperand(staticInst.get(), 0, dest_prov);
         DPRINTF(KLPDEBUG,
-                "[DynInst] Integer oracle provenance. "
+                "[DynInst] Integer EX provenance. "
                 "Inst PC: %#x, SN: %llu, sources: %u, XLEN: %u, "
                 "state: %u, candidate: %#x.\n",
                 pcState().instAddr(), seqNum,
@@ -567,10 +654,13 @@ DynInst::execute()
     bool no_squash_from_TC = thread->noSquashFromTC;
     thread->noSquashFromTC = true;
 
+    beginAddrProvCapture();
     fault = staticInst->execute(this, traceData);
+    addrProvCapture = false;
 
     // [klp] {
     updateAddrProv();
+    klpComparatorFu = -1; // A subsequent execution must issue again.
     // } [klp]
 
     thread->noSquashFromTC = no_squash_from_TC;

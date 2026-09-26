@@ -181,6 +181,25 @@ FUPool::getUnit(OpClass capability)
     return fu_idx;
 }
 
+bool
+FUPool::hasKlpComparator(int fu_idx) const
+{
+    if (fu_idx < 0 || fu_idx >= numFU)
+        return false;
+    auto *fu = funcUnits[fu_idx];
+    return fu->provides(IntAluOp) || fu->provides(IntMultOp) ||
+        fu->provides(IntDivOp);
+}
+
+unsigned
+FUPool::klpComparatorCount() const
+{
+    unsigned count = 0;
+    for (int i = 0; i < numFU; ++i)
+        count += hasKlpComparator(i);
+    return count;
+}
+
 void
 FUPool::freeUnitNextCycle(int fu_idx)
 {

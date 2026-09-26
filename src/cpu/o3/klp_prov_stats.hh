@@ -32,9 +32,10 @@ class KlpProvStats : public statistics::Group
     }
     void recordProducer(Addr pc, const char *mnemonic, const AddrProv &prov,
                         bool fresh, AddrProvOrigin step_reason);
+    void recordComparison(const AddrProvCompare &comparison);
     void recordScaled(const AddrProv &index, const AddrProv &base,
-                      const AddrProv &result, RegVal index_value,
-                      RegVal base_value, unsigned xlen);
+                      const AddrProv &result,
+                      const AddrProvCompare &comparison);
 
     void beginTakeover() { takingOver = true; }
     void endTakeover() { takingOver = false; }
@@ -64,11 +65,13 @@ class KlpProvStats : public statistics::Group
     statistics::Vector freshOrigins;
     statistics::Vector propagatedOrigins;
     statistics::Vector unknownProducerByPc;
+    statistics::Vector inputCompareReasons;
+    statistics::Vector inputCompareSelections;
     statistics::Vector scaledInputStates;
     statistics::Vector scaledResults;
-    statistics::Vector scaledMagnitude;
-    statistics::Vector scaledUnknownMagnitude;
-    statistics::Vector scaledUnknownMagnitudeByState;
+    statistics::Vector scaledComparison;
+    statistics::Vector scaledUnknownComparison;
+    statistics::Vector scaledUnknownComparisonByState;
 };
 
 } // namespace o3
