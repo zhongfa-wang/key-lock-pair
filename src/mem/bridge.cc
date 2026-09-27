@@ -136,7 +136,7 @@ BridgeBase::BridgeRequestPort::recvTimingResp(PacketPtr pkt)
     // and typically we also need to deserialise any payload (unless
     // the two sides of the bridge are synchronous)
     Tick receive_delay = pkt->headerDelay + pkt->payloadDelay;
-    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->headerDelay = pkt->payloadDelay = pkt->klpMetadataDelay = 0;
 
     cpuSidePort.schedTimingResp(pkt, bridge.clockEdge(delay) +
                               receive_delay);
@@ -190,7 +190,7 @@ BridgeBase::BridgeResponsePort::recvTimingReq(PacketPtr pkt)
             // payload (unless the two sides of the bridge are
             // synchronous)
             Tick receive_delay = pkt->headerDelay + pkt->payloadDelay;
-            pkt->headerDelay = pkt->payloadDelay = 0;
+            pkt->headerDelay = pkt->payloadDelay = pkt->klpMetadataDelay = 0;
 
             memSidePort.schedTimingReq(pkt, bridge.clockEdge(delay) +
                                                 receive_delay);

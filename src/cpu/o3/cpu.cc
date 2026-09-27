@@ -992,15 +992,6 @@ CPU::setMiscReg(int misc_reg, RegVal val, ThreadID tid)
 }
 
 // [klp] {
-RegVal
-CPU::getRegNoStats(PhysRegIdPtr phys_reg) const
-{
-    if (phys_reg == nullptr || phys_reg->is(InvalidRegClass))
-        return 0;
-
-    return regFile.getReg(phys_reg);
-}
-
 const AddrProv &
 CPU::getAddrProv(PhysRegIdPtr phys_reg) const
 {
@@ -1033,7 +1024,7 @@ CPU::resetArchAddrProv(
     // No producer instruction exists for this reset; diagnostic PC is zero.
     regFile.setAddrProv(phys_reg, noneAddrProv(origin));
 
-    const bool is_strong_seed =
+    const bool is_strong_seed = params().klpSeedAbiRoots &&
         isa[tid]->isAddrProvStrongSeed(flat_reg);
 
     if (is_strong_seed) {

@@ -43,6 +43,7 @@
 #define __CPU_O3_LSQ_UNIT_HH__
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -197,7 +198,32 @@ class LSQUnit
         const char* data() const { return _data; }
         /** @} */
     };
-    using LQEntry = LSQEntry;
+    class LQEntry : public LSQEntry
+    {
+      public:
+        // One in-flight negative STLF verdict per reserved LQ slot. Store
+        // completion/authorization may arrive before this verdict is ready.
+        Tick klpStlfReady = 0;
+        bool klpStlfWakePending = false;
+        bool klpStlfWakeByUncondi = false;
+
+        void clearKlpStlfWake()
+        {
+            klpStlfReady = 0;
+            klpStlfWakePending = false;
+            klpStlfWakeByUncondi = false;
+        }
+        void set(const DynInstPtr &inst)
+        {
+            LSQEntry::set(inst);
+            clearKlpStlfWake();
+        }
+        void clear()
+        {
+            LSQEntry::clear();
+            clearKlpStlfWake();
+        }
+    };
 
     /** Coverage of one address range with another */
     enum class AddrRangeCoverage
@@ -283,13 +309,16 @@ class LSQUnit
     /** Completes the data access that has been returned from the
      * memory system. */
     void completeDataAccess(PacketPtr pkt);
+    void noteKlpFragmentReady(LSQRequest *request, unsigned index);
 
     /** Release buffered data, or wake a key-blocked STLF, upon authorization. */
     void grantKlpUncondi(const DynInstPtr &inst);
-    void processKlpInstallEvents(bool before_writeback = false,
-                                 unsigned *recheck_budget = nullptr);
-    bool preannounceKlpInstallEvents(InstSeqNum youngest_inst,
-                                    unsigned &broadcast_budget);
+    unsigned klpTagWidth() const { return cpu->getParaTagWidth(); }
+    unsigned klpLockViewEntries() const
+    { return cpu->params().klpLockViewEntries; }
+    bool retireKlpEvent(const DynInstPtr &inst);
+    void serviceKlpHardware(unsigned &broadcast_budget, unsigned &check_budget);
+    bool hasPendingKlpEvents() const { return !klpInstallEvents.empty(); }
     void noteKlpSquash(InstSeqNum after);
 
 
@@ -349,7 +378,7 @@ class LSQUnit
     /** Returns if both the LQ and SQ are empty. */
     bool isEmpty() const
     { return lqEmpty() && sqEmpty() && klpInstalls.empty() &&
-             !hasPendingKlpWritebacks(); }
+             !hasPendingKlpEvents() && !hasPendingKlpWritebacks(); }
 
     /** Returns if the LQ is full. */
     bool lqFull()
@@ -368,7 +397,8 @@ class LSQUnit
     unsigned getCount() { return loadQueue.size() + storeQueue.size(); }
 
     /** Returns if there are any stores to writeback. */
-    bool hasStoresToWB() { return storesToWB || !klpInstalls.empty(); }
+    bool hasStoresToWB()
+    { return storesToWB || !klpInstalls.empty() || hasPendingKlpEvents(); }
 
     /** Returns the number of stores to writeback. */
     int numStoresToWB() { return storesToWB + klpInstalls.size(); }
@@ -402,38 +432,53 @@ class LSQUnit
     void serviceKlpInstalls();
     bool hasOlderKlpInstall(InstSeqNum seq) const;
     void wakeKlpStlfLoads(InstSeqNum store_seq);
+    void queueKlpStlfWake(LQEntry &entry, bool by_uncondi);
 
+    // Each enqueue port is associated with a retire slot. A record has at
+    // most two translated RV64 fragments, eight granules, and eight data bytes.
+    // Queue fullness is checked BEFORE architectural retirement.
     struct KlpInstallEvent
     {
-        struct Range { Addr addr; unsigned size; bool secure; };
-        InstSeqNum seq;
-        uint64_t key;
-        std::vector<Range> ranges;
-        // Null for load installs. SQ entries stay alive throughout the batch.
-        SQEntry *store = nullptr;
+        struct Range { Addr addr; unsigned size; bool secure; Addr vaddr; };
+        struct Record { Addr granule; bool secure; };
+        InstSeqNum seq = 0;
+        uint64_t key = 0;
+        std::array<Range, 2> ranges{};
+        std::array<Record, 8> records{};
+        unsigned numRanges = 0;
+        unsigned numRecords = 0;
+        unsigned nextRecord = 0;
+        bool store = false;
+        bool cancelled = false;
+        Addr storeAddr = 0;
+        unsigned storeSize = 0;
+        StoreQueue::iterator storeEnd;
+        std::array<uint8_t, 8> data{};
+        Tick ready = 0;
     };
-    std::vector<KlpInstallEvent> klpInstallEvents;
-    // Irrevocable retirement events already announced by the early path.
-    InstSeqNum klpEarlyEventSeq = 0;
-    // Same-tick late service is required even if preview suppressed all events.
-    bool klpEarlyRechecksPending = false;
-    // The scalar fast path has two translated-fragment/granule slots per load.
+    std::deque<KlpInstallEvent> klpInstallEvents;
+    unsigned klpScalarGranules(LSQRequest *request) const;
     unsigned klpScalarBroadcasts(LSQRequest *request) const;
     bool klpStoreInstall = false;
     unsigned klpPendingWritebacks = 0;
     InstSeqNum klpSquashAfter = std::numeric_limits<InstSeqNum>::max();
-    void queueKlpInstallEvent(const DynInstPtr &inst, LSQRequest *request,
-                              SQEntry *store = nullptr, bool early = false);
-    bool klpStoreInstallEventEligible(SQEntry &entry) const;
-    bool klpStoreHasInterveningWriter(const KlpInstallEvent &event,
-                                    const DynInstPtr &load,
-                                    LSQRequest *request);
+    Tick klpLastServiceTick = MaxTick;
+    // Lifetime diagnostics, independent of statistics reset epochs.
+    uint64_t klpEventsAccepted = 0;
+    uint64_t klpEventsFinished = 0;
+    bool klpStoreInstallEventEligible(SQEntry &entry,
+                                      bool retiring = false) const;
     bool klpStoreDisjointMetadata(const KlpInstallEvent &event,
-                                  const DynInstPtr &load,
-                                  LSQRequest *request);
+                                 const DynInstPtr &load,
+                                 LSQRequest *request, bool count = true);
     bool klpEventTarget(const DynInstPtr &inst, LSQRequest *request) const;
     bool klpStoreCanForward(const KlpInstallEvent &event,
                            const DynInstPtr &load, LSQRequest *request);
+    bool klpPendingEventHazard(const DynInstPtr &inst, LSQRequest *request);
+    bool klpSnapshotsReady(LSQRequest *request) const;
+    void scheduleKlpCheck(LSQRequest *request, bool input_changed = true);
+    void broadcastKlpRecord(const KlpInstallEvent &event,
+                            const KlpInstallEvent::Record &record);
     void finishKlpWait(const DynInstPtr &inst);
     void noteKlpDataReady(const DynInstPtr &inst);
     void noteKlpHold(const DynInstPtr &inst);
@@ -612,6 +657,10 @@ class LSQUnit
         statistics::Scalar klpStlfBlocked;
         statistics::Scalar klpStlfRetries;
         statistics::Scalar klpStlfPassed;
+        statistics::Scalar klpStlfChecks;
+        statistics::Scalar klpStlfPortStalls;
+        statistics::Scalar klpStlfWakeDeferred;
+        statistics::Scalar klpStlfWakeReleased;
         statistics::Scalar klpInstallQueued;
         statistics::Scalar klpInstallSent;
         statistics::Scalar klpInstallCompleted;
@@ -625,20 +674,23 @@ class LSQUnit
         statistics::Scalar klpEventReleasedLoads;
         statistics::Scalar klpEventStoreForwards;
         statistics::Scalar klpWritebackRetries;
-        statistics::Scalar klpEarlyWidthFallbacks;
-        statistics::Scalar klpEarlyShapeFallbacks;
-        statistics::Scalar klpEarlyRecheckDeferred;
-        statistics::Scalar klpDisjointShapeRejected;
-        statistics::Scalar klpEarlyBatches;
-        statistics::Scalar klpEarlyEvents;
-        statistics::Scalar klpEarlyReadyRechecks;
-        statistics::Scalar klpEarlyReadyReleases;
-        statistics::Scalar klpEarlySameCycleWritebacks;
         statistics::Scalar klpDisjointCandidates;
         statistics::Scalar klpDisjointWriterBlocked;
         statistics::Scalar klpDisjointUpdates;
         statistics::Scalar klpDisjointRechecks;
         statistics::Scalar klpDisjointReleasedLoads;
+        statistics::Scalar klpEventEnqueued;
+        statistics::Scalar klpEventCompleted;
+        statistics::Scalar klpEventQueueFull;
+        statistics::Scalar klpEventUnsupported;
+        statistics::Scalar klpEventBroadcasts;
+        statistics::Scalar klpChecksIssued;
+        statistics::Scalar klpCheckBudgetStalls;
+        statistics::Scalar klpCheckEventHazardStalls;
+        statistics::Scalar klpCheckSnapshotStalls;
+        statistics::Scalar klpCheckUnrelatedEventBypasses;
+        statistics::Scalar klpCheckResultReuses;
+        statistics::Distribution klpEventQueueOccupancy;
 
 
         /** Total number of squashed loads. */

@@ -310,7 +310,7 @@ CfiMemory::recvTimingReq(PacketPtr pkt)
     // and since this is a memory controller we also need to
     // deserialise the payload before performing any write operation
     Tick receive_delay = pkt->headerDelay + pkt->payloadDelay;
-    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->headerDelay = pkt->payloadDelay = pkt->klpMetadataDelay = 0;
 
     // update the release time according to the bandwidth limit, and
     // do so with respect to the time it takes to finish this request

@@ -315,6 +315,23 @@ class BaseXBar : public ClockedObject
     const Cycles headerLatency;
     /** the width of the xbar in bytes */
     const uint32_t width;
+    const unsigned klpMetadataWidth;
+    const unsigned klpSnoopMetadataWidth;
+    // One finite clean-snoop return lane, separate from ordinary Layers.
+    Tick klpSnoopMetadataReady = 0;
+    struct KlpSnoopReservation
+    {
+        Tick previous;
+        Tick finish;
+        Tick wait;
+    };
+    KlpSnoopReservation chargeKlpSnoopMetadata(PacketPtr pkt);
+    void rollbackKlpSnoopMetadata(const KlpSnoopReservation &reservation);
+    void calcPacketPayloadDelay(PacketPtr pkt, Tick header_delay);
+    statistics::Scalar klpSnoopMetadataTransfers;
+    statistics::Scalar klpSnoopMetadataBytes;
+    statistics::Scalar klpSnoopMetadataWaitTicks;
+    statistics::Scalar klpSnoopMetadataRetries;
 
     AddrRangeMap<PortID, 3> portMap;
 

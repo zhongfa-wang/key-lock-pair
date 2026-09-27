@@ -92,7 +92,7 @@ MemDelay::RequestPort::recvTimingResp(PacketPtr pkt)
     // technically the packet only reaches us after the header delay,
     // and typically we also need to deserialise any payload
     const Tick receive_delay = pkt->headerDelay + pkt->payloadDelay;
-    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->headerDelay = pkt->payloadDelay = pkt->klpMetadataDelay = 0;
 
     const Tick when = curTick() + parent.delayResp(pkt) + receive_delay;
 
@@ -148,7 +148,7 @@ MemDelay::ResponsePort::recvTimingReq(PacketPtr pkt)
     // delay, and typically we also need to deserialise any
     // payload
     Tick receive_delay = pkt->headerDelay + pkt->payloadDelay;
-    pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->headerDelay = pkt->payloadDelay = pkt->klpMetadataDelay = 0;
 
     const Tick when = curTick() + parent.delayReq(pkt) + receive_delay;
 

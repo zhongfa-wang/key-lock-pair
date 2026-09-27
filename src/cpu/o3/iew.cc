@@ -94,10 +94,12 @@ IEW::IEW(CPU *_cpu, const BaseO3CPUParams &params)
              "\tincrease MaxWidth in src/cpu/o3/limits.hh\n",
              wbWidth, static_cast<int>(MaxWidth));
 
-    fatal_if(params.klpEarlyInstallWidth > 2 * params.commitWidth,
-             "KLP early broadcast width exceeds two records per retire slot");
+    fatal_if(cpu->isKlpEnabled() &&
+             (!params.klpEarlyInstallWidth || !params.klpEarlyRecheckWidth ||
+              !params.klpInstallEventEntries || params.klpCheckLatency < Cycles(1)),
+             "KLP hardware widths, event capacity and check latency must be positive");
     fatal_if(params.klpEarlyRecheckWidth > params.LQEntries,
-             "KLP early recheck width exceeds the configured load queue");
+             "KLP validation width exceeds the configured load queue");
 
     _status = Active;
     exeStatus = Running;
@@ -210,9 +212,9 @@ IEW::IEWStats::IEWStats(CPU *cpu)
         statistics::units::Ratio::get(),
         "Fraction of dynamic KLP loads with AMBIGUOUS EA provenance"),
     ADD_STAT(klpEarlyBroadcastsPerCycle, statistics::units::Count::get(),
-        "Early granule broadcast records per active IEW cycle, shared by SMT"),
+        "All KLP granule broadcast records per IEW cycle, shared by SMT"),
     ADD_STAT(klpEarlyRechecksPerCycle, statistics::units::Count::get(),
-        "Early load validations per active IEW cycle, shared by SMT")
+        "All cache/event KLP checks per IEW cycle, shared by SMT")
     // } [klp]
 {
     klpEarlyBroadcastsPerCycle.init(0, cpu->params().klpEarlyInstallWidth, 1);
@@ -1556,31 +1558,20 @@ IEW::tick()
     if (exeStatus != Squashing) {
         executeInsts();
 
-        if (cpu->isKlpEnabled() && cpu->params().klpEarlyInstallEvents) {
+        if (cpu->isKlpEnabled()) {
             unsigned broadcast_budget = cpu->params().klpEarlyInstallWidth;
-            unsigned recheck_budget = cpu->params().klpEarlyRecheckWidth;
-            // executeInsts() leaves a cursor for asynchronous completions
-            // after the CPU advances iewQueue. Same-cycle early writebacks
-            // temporarily select a slot in the current buffer; do not leak
-            // that slot index into the next buffer and create holes there.
+            unsigned check_budget = cpu->params().klpEarlyRecheckWidth;
             const auto async_wb_cycle = wbCycle;
             const auto async_wb_num_inst = wbNumInst;
-            for (ThreadID tid : *activeThreads) {
-                const auto &commit_info = fromCommit->commitInfo[tid];
-                if (commit_info.doneSeqNum != 0 &&
-                    !commit_info.squash && !commit_info.robSquashing) {
-                    // Only announce already-irrevocable events here. Keep
-                    // SQ writeback, LQ credits and physical installs at their
-                    // ordinary positions below.
-                    ldstQueue.processEarlyKlpInstallEvents(
-                        commit_info.doneSeqNum, tid,
-                        broadcast_budget, recheck_budget);
-                }
-            }
+            // Service retained work every cycle, even when nothing retires.
+            // There is exactly one shared resource budget, with no late path.
+            ldstQueue.serviceKlpHardware(broadcast_budget, check_budget);
+            assert(broadcast_budget <= cpu->params().klpEarlyInstallWidth);
+            assert(check_budget <= cpu->params().klpEarlyRecheckWidth);
             iewStats.klpEarlyBroadcastsPerCycle.sample(
                 cpu->params().klpEarlyInstallWidth - broadcast_budget);
             iewStats.klpEarlyRechecksPerCycle.sample(
-                cpu->params().klpEarlyRecheckWidth - recheck_budget);
+                cpu->params().klpEarlyRecheckWidth - check_budget);
             wbCycle = async_wb_cycle;
             wbNumInst = async_wb_num_inst;
         }
@@ -1625,8 +1616,6 @@ IEW::tick()
 
             ldstQueue.commitLoads(fromCommit->commitInfo[tid].doneSeqNum,tid);
 
-            // Both retirement walks contribute to one program-ordered batch.
-            ldstQueue.processKlpInstallEvents(tid);
 
             updateLSQNextCycle = true;
             instQueue.commit(fromCommit->commitInfo[tid].doneSeqNum,tid);

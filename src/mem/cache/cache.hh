@@ -120,7 +120,8 @@ class Cache : public BaseCache
                         bool pending_downgrade = false) override;
 
     void doTimingSupplyResponse(PacketPtr req_pkt, const uint8_t *blk_data,
-                                bool already_copied, bool pending_inval);
+                                bool already_copied, bool pending_inval,
+                                Tick metadata_ready = 0);
 
     /**
      * Perform an upward snoop if needed, and update the block state

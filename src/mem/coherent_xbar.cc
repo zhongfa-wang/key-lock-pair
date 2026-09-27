@@ -45,6 +45,8 @@
 
 #include "mem/coherent_xbar.hh"
 
+#include <optional>
+
 #include "base/compiler.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
@@ -175,11 +177,15 @@ CoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
 
     // store size and command as they might be modified when
     // forwarding the packet
-    unsigned int pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+    unsigned int pkt_size = pkt->wireSize();
     unsigned int pkt_cmd = pkt->cmdToIndex();
 
     // store the old header delay so we can restore it if needed
     Tick old_header_delay = pkt->headerDelay;
+    const Tick old_payload_delay = pkt->payloadDelay;
+    const Tick old_metadata_delay = pkt->klpMetadataDelay;
+    std::optional<KlpSnoopReservation> klp_snoop_reservation;
+    unsigned klp_snoop_bytes = 0;
 
     // a request sees the frontend and forward latency
     Tick xbar_delay = (frontendLatency + forwardLatency) * clockPeriod();
@@ -216,6 +222,11 @@ CoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
                 // update the layer state and schedule an idle event
                 reqLayers[mem_side_port_id]->failedTiming(src_port,
                                                         clockEdge(Cycles(1)));
+                // This attempt did not leave the crossbar. Metadata is part
+                // of the same rejected header/data transaction.
+                pkt->headerDelay = old_header_delay;
+                pkt->payloadDelay = old_payload_delay;
+                pkt->klpMetadataDelay = old_metadata_delay;
                 return false;
             }
         }
@@ -252,6 +263,13 @@ CoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
         // add the snoop delay to our header delay, and then reset it
         pkt->headerDelay += pkt->snoopDelay;
         pkt->snoopDelay = 0;
+        if (!metadata_before_snoop.hasSecTagLineMetadataPkt &&
+            pkt->secTagLineFromCleanSnoopPkt && !pkt->cacheResponding()) {
+            klp_snoop_bytes = (pkt->secTagLineWireBits() + 7) / 8;
+            klp_snoop_reservation = chargeKlpSnoopMetadata(pkt);
+            packetFinishTime = clockEdge(headerLatency) + pkt->payloadDelay;
+            pkt_size = pkt->wireSize();
+        }
     }
 
     // set up a sensible starting point
@@ -318,7 +336,13 @@ CoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
 
         // restore both timing and pre-attempt metadata
         pkt->headerDelay = old_header_delay;
+        pkt->payloadDelay = old_payload_delay;
+        pkt->klpMetadataDelay = old_metadata_delay;
         pkt->copySecTagLineMetadataFrom(&metadata_before_snoop);
+        if (klp_snoop_reservation) {
+            rollbackKlpSnoopMetadata(*klp_snoop_reservation);
+            ++klpSnoopMetadataRetries;
+        }
 
         DPRINTF(CoherentXBar, "%s: src %s packet %s RETRY\n", __func__,
                 src_port->name(), pkt->print());
@@ -327,6 +351,11 @@ CoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
         reqLayers[mem_side_port_id]->failedTiming(src_port,
                                                 clockEdge(Cycles(1)));
     } else {
+        if (klp_snoop_reservation) {
+            ++klpSnoopMetadataTransfers;
+            klpSnoopMetadataBytes += klp_snoop_bytes;
+            klpSnoopMetadataWaitTicks += klp_snoop_reservation->wait;
+        }
         // express snoops currently bypass the crossbar state entirely
         if (!is_express_snoop) {
             // if this particular request will generate a snoop
@@ -474,7 +503,7 @@ CoherentXBar::recvTimingResp(PacketPtr pkt, PortID mem_side_port_id)
 
     // store size and command as they might be modified when
     // forwarding the packet
-    unsigned int pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+    unsigned int pkt_size = pkt->wireSize();
     unsigned int pkt_cmd = pkt->cmdToIndex();
 
     // a response sees the response latency
@@ -518,7 +547,7 @@ CoherentXBar::recvTimingSnoopReq(PacketPtr pkt, PortID mem_side_port_id)
             memSidePorts[mem_side_port_id]->name(), pkt->print());
 
     // update stats here as we know the forwarding will succeed
-    unsigned int pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+    unsigned int pkt_size = pkt->wireSize();
     transDist[pkt->cmdToIndex()]++;
     snoops++;
     snoopTraffic += pkt_size;
@@ -533,6 +562,7 @@ CoherentXBar::recvTimingSnoopReq(PacketPtr pkt, PortID mem_side_port_id)
     // remember if a cache has already committed to responding so we
     // can see if it changes during the snooping
     const bool cache_responding = pkt->cacheResponding();
+    const bool had_metadata = pkt->hasSecTagLineMetadataPkt;
 
     assert(pkt->snoopDelay == 0);
 
@@ -556,6 +586,13 @@ CoherentXBar::recvTimingSnoopReq(PacketPtr pkt, PortID mem_side_port_id)
     // add the snoop delay to our header delay, and then reset it
     pkt->headerDelay += pkt->snoopDelay;
     pkt->snoopDelay = 0;
+    if (!had_metadata && pkt->secTagLineFromCleanSnoopPkt &&
+        !pkt->cacheResponding()) {
+        const auto reservation = chargeKlpSnoopMetadata(pkt);
+        ++klpSnoopMetadataTransfers;
+        klpSnoopMetadataBytes += (pkt->secTagLineWireBits() + 7) / 8;
+        klpSnoopMetadataWaitTicks += reservation.wait;
+    }
 
     // if we can expect a response, remember how to route it
     if (!cache_responding && pkt->cacheResponding()) {
@@ -617,7 +654,7 @@ CoherentXBar::recvTimingSnoopResp(PacketPtr pkt, PortID cpu_side_port_id)
 
     // store size and command as they might be modified when
     // forwarding the packet
-    unsigned int pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+    unsigned int pkt_size = pkt->wireSize();
     unsigned int pkt_cmd = pkt->cmdToIndex();
 
     // responses are never express snoops
@@ -745,7 +782,7 @@ CoherentXBar::recvAtomicBackdoor(PacketPtr pkt, PortID cpu_side_port_id,
     DPRINTF(CoherentXBar, "%s: src %s packet %s\n", __func__,
             cpuSidePorts[cpu_side_port_id]->name(), pkt->print());
 
-    unsigned int pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+    unsigned int pkt_size = pkt->wireSize();
     unsigned int pkt_cmd = pkt->cmdToIndex();
 
     MemCmd snoop_response_cmd = MemCmd::InvalidCmd;
@@ -876,7 +913,7 @@ CoherentXBar::recvAtomicBackdoor(PacketPtr pkt, PortID cpu_side_port_id,
 
     // add the response data
     if (pkt->isResponse()) {
-        pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+        pkt_size = pkt->wireSize();
         pkt_cmd = pkt->cmdToIndex();
 
         // stats updates
@@ -897,7 +934,7 @@ CoherentXBar::recvAtomicSnoop(PacketPtr pkt, PortID mem_side_port_id)
             memSidePorts[mem_side_port_id]->name(), pkt->print());
 
     // add the request snoop data
-    unsigned int pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+    unsigned int pkt_size = pkt->wireSize();
     snoops++;
     snoopTraffic += pkt_size;
 

@@ -45,6 +45,7 @@
 
 #include "mem/noncoherent_xbar.hh"
 
+#include "base/intmath.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
 #include "debug/NoncoherentXBar.hh"
@@ -123,11 +124,13 @@ NoncoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
 
     // store size and command as they might be modified when
     // forwarding the packet
-    unsigned int pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+    unsigned int pkt_size = pkt->wireSize();
     unsigned int pkt_cmd = pkt->cmdToIndex();
 
     // store the old header delay so we can restore it if needed
     Tick old_header_delay = pkt->headerDelay;
+    const Tick old_payload_delay = pkt->payloadDelay;
+    const Tick old_metadata_delay = pkt->klpMetadataDelay;
 
     // a request sees the frontend and forward latency
     Tick xbar_delay = (frontendLatency + forwardLatency) * clockPeriod();
@@ -137,6 +140,11 @@ NoncoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
 
     // determine how long to be crossbar layer is busy
     Tick packetFinishTime = clockEdge(Cycles(1)) + pkt->payloadDelay;
+    // This crossbar retains the classic one-cycle data/header occupancy.
+    // Metadata may overlap a longer header pipeline, but its finite wires
+    // must remain occupied for every beat, including the overlapped beats.
+    packetFinishTime = std::max(packetFinishTime, clockEdge(Cycles(
+        divCeil(pkt->klpWireBits(), klpMetadataWidth))));
 
     // before forwarding the packet (and possibly altering it),
     // remember if we are expecting a response
@@ -152,6 +160,8 @@ NoncoherentXBar::recvTimingReq(PacketPtr pkt, PortID cpu_side_port_id)
 
         // restore the header delay as it is additive
         pkt->headerDelay = old_header_delay;
+        pkt->payloadDelay = old_payload_delay;
+        pkt->klpMetadataDelay = old_metadata_delay;
 
         // occupy until the header is sent
         reqLayers[mem_side_port_id]->failedTiming(src_port,
@@ -202,7 +212,7 @@ NoncoherentXBar::recvTimingResp(PacketPtr pkt, PortID mem_side_port_id)
 
     // store size and command as they might be modified when
     // forwarding the packet
-    unsigned int pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+    unsigned int pkt_size = pkt->wireSize();
     unsigned int pkt_cmd = pkt->cmdToIndex();
 
     // a response sees the response latency
@@ -213,6 +223,11 @@ NoncoherentXBar::recvTimingResp(PacketPtr pkt, PortID mem_side_port_id)
 
     // determine how long to be crossbar layer is busy
     Tick packetFinishTime = clockEdge(Cycles(1)) + pkt->payloadDelay;
+    // This crossbar retains the classic one-cycle data/header occupancy.
+    // Metadata may overlap a longer header pipeline, but its finite wires
+    // must remain occupied for every beat, including the overlapped beats.
+    packetFinishTime = std::max(packetFinishTime, clockEdge(Cycles(
+        divCeil(pkt->klpWireBits(), klpMetadataWidth))));
 
     // send the packet through the destination CPU-side port, and pay for
     // any outstanding latency
@@ -251,7 +266,7 @@ NoncoherentXBar::recvAtomicBackdoor(PacketPtr pkt, PortID cpu_side_port_id,
             cpuSidePorts[cpu_side_port_id]->name(), pkt->getAddr(),
             pkt->cmdString());
 
-    unsigned int pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+    unsigned int pkt_size = pkt->wireSize();
     unsigned int pkt_cmd = pkt->cmdToIndex();
 
     // determine the destination port
@@ -270,7 +285,7 @@ NoncoherentXBar::recvAtomicBackdoor(PacketPtr pkt, PortID cpu_side_port_id,
 
     // add the response data
     if (pkt->isResponse()) {
-        pkt_size = pkt->hasData() ? pkt->getSize() : 0;
+        pkt_size = pkt->wireSize();
         pkt_cmd = pkt->cmdToIndex();
 
         // stats updates

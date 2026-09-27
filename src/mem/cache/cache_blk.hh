@@ -68,6 +68,40 @@
 namespace gem5
 {
 
+/** Two simulation timing markers per physical metadata word, analogous to
+ * CacheBlk::whenReady. They annotate visibility rather than SRAM throughput.
+ * Reads latch a snapshot
+ * at issue and then pipeline independently. A later write cannot overtake
+ * that sample, but need not wait for its registered result. Same-cycle
+ * read-before-write returns old data; write-before-read still waits for the
+ * write to finish. Thus there is no forwarding from a not-yet-visible write.
+ */
+struct KlpMetadataOrder
+{
+    uint64_t writeReady = 0;
+    uint64_t readIssue = 0;
+
+    uint64_t ready(uint64_t arrival, bool write) const
+    {
+        return std::max(arrival, write ? std::max(writeReady, readIssue) :
+                                       writeReady);
+    }
+
+    void issued(uint64_t issue, uint64_t finish, bool write)
+    {
+        if (write)
+            writeReady = finish;
+        else
+            readIssue = std::max(readIssue, issue);
+    }
+
+    void merge(const KlpMetadataOrder &other)
+    {
+        writeReady = std::max(writeReady, other.writeReady);
+        readIssue = std::max(readIssue, other.readIssue);
+    }
+};
+
 /**
  * A Basic Cache block.
  * Contains information regarding its coherence, prefetching status, as
@@ -108,10 +142,20 @@ class CacheBlk : public TaggedEntry
      */
     uint8_t *data = nullptr;
     // [klp] {
+    // Fixed per-physical-slot read-sample/write-completion ordering. Keep
+    // across invalidation/reuse so a new occupant cannot pass an outstanding
+    // access to the previous one. These annotate timing, not extra storage.
+    KlpMetadataOrder klpMetadataOrder;
     uint64_t *secTagPtrInCache = nullptr; // Points to the first lock of the block.
     std::vector<bool> secTagValidBitsInCache;
+    // Directory summary bit, updated with sidecar writes. This permits an
+    // all-invalid response without inspecting the lock SRAM for free.
+    bool secTagAnyValid = false;
     void initSecTagValidBits(unsigned granuleNum)
-    { secTagValidBitsInCache.assign(granuleNum, false); }
+    {
+        secTagValidBitsInCache.assign(granuleNum, false);
+        secTagAnyValid = false;
+    }
     // Tag stores may supply an external array. Temporary blocks and tag
     // implementations without that array use private storage instead.
     std::vector<uint64_t> privateSecTagValues;
@@ -124,13 +168,7 @@ class CacheBlk : public TaggedEntry
         }
         assert(secTagValidBitsInCache.size() == granules);
     }
-    bool hasValidSecTag() const
-    {
-        for (bool valid : secTagValidBitsInCache)
-            if (valid)
-                return true;
-        return false;
-    }
+    bool hasValidSecTag() const { return secTagAnyValid; }
     // } [klp]
 
     /**
@@ -193,11 +231,14 @@ class CacheBlk : public TaggedEntry
     {
       assert(nth < secTagValidBitsInCache.size());
       secTagValidBitsInCache[nth] = false;
+      secTagAnyValid = std::any_of(secTagValidBitsInCache.begin(),
+          secTagValidBitsInCache.end(), [](bool valid) { return valid; });
     }
     /* Invalidate all secure tags of this block. */
     void invalidateSecTag()
     {
       secTagValidBitsInCache.assign(secTagValidBitsInCache.size(),false);
+      secTagAnyValid = false;
     }
     /* Set the sec tag valid bit as valid. */
     void setSecTagValid(int nth, const PacketPtr pkt)
@@ -210,6 +251,7 @@ class CacheBlk : public TaggedEntry
         secTagValidBitsInCache[nth]?"True":"False"
         );
       secTagValidBitsInCache[nth] = true;
+      secTagAnyValid = true;
     }
     // /* Candidate constructor that initializes sec tag valid bits. */
     // CacheBlk(int bitsNum) : TaggedEntry(),
@@ -250,11 +292,13 @@ class CacheBlk : public TaggedEntry
         setRefCount(other.getRefCount());
         setSrcRequestorId(other.getSrcRequestorId());
         std::swap(lockList, other.lockList);
+        klpMetadataOrder.merge(other.klpMetadataOrder);
         if (other.secTagPtrInCache) {
             ensureSecTagStorage(other.secTagValidBitsInCache.size());
             std::copy_n(other.secTagPtrInCache,
                         other.secTagValidBitsInCache.size(), secTagPtrInCache);
             secTagValidBitsInCache = other.secTagValidBitsInCache;
+            secTagAnyValid = other.secTagAnyValid;
         } else {
             invalidateSecTag();
         }

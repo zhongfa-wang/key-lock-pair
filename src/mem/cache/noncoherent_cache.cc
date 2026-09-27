@@ -99,7 +99,10 @@ NoncoherentCache::doWritebacks(PacketList& writebacks, Tick forward_time)
 {
     while (!writebacks.empty()) {
         PacketPtr wb_pkt = writebacks.front();
-        allocateWriteBuffer(wb_pkt, forward_time);
+        const Tick metadata_ready = std::max(forward_time,
+                                             curTick() + wb_pkt->headerDelay);
+        wb_pkt->headerDelay = wb_pkt->klpMetadataDelay = 0;
+        allocateWriteBuffer(wb_pkt, metadata_ready);
         writebacks.pop_front();
     }
 }
@@ -248,6 +251,12 @@ NoncoherentCache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt,
     bool from_core = false;
     bool from_pref = false;
 
+    // One line snapshot per existing finite MSHR; its bounded target list
+    // receives one broadcast, rather than re-reading the cache array once
+    // per target. Payload timing includes arrival of all metadata bits.
+    bool klp_have_snapshot = pkt->isRead() && pkt->hasData();
+    Tick klp_snapshot_ready = clockEdge() + pkt->headerDelay +
+                              pkt->klpMetadataDelay;
     MSHR::TargetList targets = mshr->extractServiceableTargets(pkt);
     for (auto &target: targets) {
         Packet *tgt_pkt = target.pkt;
@@ -260,6 +269,9 @@ NoncoherentCache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt,
             from_core = true;
 
             Tick completion_time;
+            Tick metadata_ready;
+            metadata_ready = klpTargetReady(tgt_pkt, pkt, blk,
+                klp_have_snapshot, klp_snapshot_ready);
             // Here we charge on completion_time the delay of the xbar if the
             // packet comes from it, charged on headerDelay.
             completion_time = pkt->headerDelay;
@@ -278,6 +290,7 @@ NoncoherentCache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt,
             // the core.
             completion_time += clockEdge(responseLatency) +
                 (transfer_offset ? pkt->payloadDelay : 0);
+            completion_time = std::max(completion_time, metadata_ready);
 
             assert(tgt_pkt->req->requestorId() < system->maxRequestors());
             stats.cmdStats(tgt_pkt).missLatency[tgt_pkt->req->requestorId()] +=
@@ -289,6 +302,7 @@ NoncoherentCache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt,
 
             // Reset the bus additional time as it is now accounted for
             tgt_pkt->headerDelay = tgt_pkt->payloadDelay = 0;
+            tgt_pkt->klpMetadataDelay = 0;
             cpuSidePort.schedTimingResp(tgt_pkt, completion_time);
             break;
 

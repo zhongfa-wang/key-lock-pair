@@ -126,8 +126,10 @@ class CPU : public BaseCPU
     /**
     * Reinitialize provenance after a direct architectural-register write.
     *
-    * Integer registers are cleared to NONE. Register identity and direct
-    * architectural writes cannot seed the value-comparison oracle.
+    * Simulator-injected register values reset provenance to NONE. The
+    * explicit klpSeedAbiRoots initialization policy optionally seeds the
+    * ISA's SP/GP/TP roots. Ordinary executed writes use the producer datapath,
+    * not this boot/takeover/debugger/SE register-injection interface.
     */
     void
     resetArchAddrProv(
@@ -338,8 +340,6 @@ class CPU : public BaseCPU
     void setReg(PhysRegIdPtr phys_reg, const void *val, ThreadID tid);
 
     // [klp] {
-    RegVal getRegNoStats(PhysRegIdPtr phys_reg) const;
-
     const AddrProv &
     getAddrProv(PhysRegIdPtr phys_reg) const;
     

@@ -294,6 +294,16 @@ class LSQ
         std::vector<uint8_t> klpForwardData;
         bool klpResultDelivered = false;
         bool klpEventTouched = false;
+        bool klpCheckPending = false;
+        bool klpInitialCheckDone = false;
+        // Two latches beside the LQ entry. Authorization can reuse a completed
+        // verdict only until data, lock metadata, or coherence changes it.
+        bool klpCheckResultValid = false;
+        bool klpLastCheckPassed = false;
+        // Arrival bits, not Packet::isResponse(): classic caches can mutate
+        // a shared packet before its modeled return latency has elapsed.
+        uint8_t klpFragmentsReceived = 0;
+        Tick klpCheckReady = 0;
         // Diagnostic association only; never used to authorize a load.
         bool klpDisjointPending = false;
 
@@ -737,10 +747,10 @@ class LSQ
 
     /** Release buffered KLP data or wake a key-blocked STLF attempt. */
     void grantKlpUncondi(const DynInstPtr &inst);
-    void processKlpInstallEvents(ThreadID tid);
-    void processEarlyKlpInstallEvents(InstSeqNum youngest_inst, ThreadID tid,
-                                      unsigned &broadcast_budget,
-                                      unsigned &recheck_budget);
+    bool retireKlpEvent(const DynInstPtr &inst);
+    void serviceKlpHardware(unsigned &broadcast_budget, unsigned &check_budget);
+    /** Dedicated key sidecars on the finite memory-execution lanes. */
+    bool takeKlpStlfPort();
     void noteKlpSquash(InstSeqNum after, ThreadID tid);
 
 
@@ -966,6 +976,7 @@ class LSQ
     int cacheLoadPorts;
     /** The number of used cache ports in this cycle by loads. */
     int usedLoadPorts;
+    unsigned usedKlpStlfPorts = 0;
 
     /** If the LSQ is currently waiting for stale translations */
     bool waitingForStaleTranslation;

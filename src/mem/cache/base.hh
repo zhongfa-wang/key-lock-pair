@@ -116,6 +116,17 @@ class BaseCache : public ClockedObject
     uint64_t tagBitMask;
     const bool klpEnabled;
     const bool klpStoreInstall;
+    const Cycles klpMetadataLatency;
+    // Like classic tag/data arrays, metadata has an access latency without
+    // a separate physical-port or bank-contention model.
+    Tick accessKlpMetadata(Tick arrival, CacheBlk *blk = nullptr,
+                           bool write = false);
+    bool needsKlpMetadata(const PacketPtr pkt, const CacheBlk *blk) const;
+    bool writesKlpMetadata(const PacketPtr pkt) const;
+    Tick klpTargetReady(PacketPtr target, const PacketPtr response,
+                        CacheBlk *blk, bool &have_snapshot,
+                        Tick &snapshot_ready);
+    void timeKlpWriteback(PacketPtr pkt, CacheBlk *blk);
 
     /** Whole-cache snapshots and ownership-protected metadata updates. */
     void exportSecTagMetadata(PacketPtr pkt, const CacheBlk *blk) const;
@@ -1102,6 +1113,12 @@ class BaseCache : public ClockedObject
         statistics::Scalar tagVeriFailNum;
         statistics::Scalar klpLockInstallNum;
         statistics::Scalar klpStoreInstallNum;
+        statistics::Scalar klpMetadataAccesses;
+        statistics::Scalar klpMetadataReadAccesses;
+        statistics::Scalar klpMetadataWriteAccesses;
+        statistics::Scalar klpMetadataHazardTicks;
+        statistics::Scalar klpMetadataFillForwards;
+        statistics::Scalar klpMetadataLookupAvoided;
         statistics::Scalar failCuzofL1DMissNum;
         statistics::Scalar failCuzofTagMismatchNum;
 

@@ -150,17 +150,33 @@ class BaseO3CPU(BaseCPU):
     klpPostRetireGrant = Param.Bool(
         True, "Arbitrate KLP authorization once, after actual ROB retirement"
     )
-    klpEarlyInstallEvents = Param.Bool(
-        True, "Broadcast a bounded complete retirement batch before writeback"
-    )
     klpDisjointStoreMetadata = Param.Bool(
         True, "Forward disjoint-byte lock metadata from the nearest older store"
     )
     klpEarlyInstallWidth = Param.Unsigned(
-        2, "Shared early lock-granule broadcast records per CPU cycle"
+        2, "Total lock-granule broadcast lanes per CPU cycle, shared by SMT"
     )
     klpEarlyRecheckWidth = Param.Unsigned(
-        2, "Shared early load revalidations per CPU cycle"
+        2, "Total cache/event validation lanes per CPU cycle, shared by SMT"
+    )
+    klpStlfCheckWidth = Param.Unsigned(
+        Self.issueWidth,
+        "STLF key-comparison lanes per CPU cycle, shared by SMT; "
+        "defaults to issueWidth",
+    )
+    klpLockViewEntries = Param.Unsigned(
+        8, "Active per-load local lock-view entries (1..8); larger footprints "
+        "validate only after all cache responses arrive",
+    )
+    klpSeedAbiRoots = Param.Bool(
+        True, "Seed SP/GP/TP on simulator register initialization/injection; "
+        "false resets all provenance to NONE"
+    )
+    klpInstallEventEntries = Param.Unsigned(
+        16, "Retirement event FIFO entries per thread; full stalls retirement"
+    )
+    klpCheckLatency = Param.Cycles(
+        1, "Minimum registered cache/event/STLF KLP check latency"
     )
     LSQDepCheckShift = Param.Unsigned(
         4, "Number of places to shift addr before check"

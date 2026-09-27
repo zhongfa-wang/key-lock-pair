@@ -271,7 +271,7 @@ DRAMsim3::accessAndRespond(PacketPtr pkt)
         // of the packet.
         Tick time = curTick() + pkt->headerDelay + pkt->payloadDelay;
         // Reset the timings of the packet
-        pkt->headerDelay = pkt->payloadDelay = 0;
+        pkt->headerDelay = pkt->payloadDelay = pkt->klpMetadataDelay = 0;
 
         DPRINTF(DRAMsim3, "Queuing response for address %lld\n",
                 pkt->getAddr());

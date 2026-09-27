@@ -7,9 +7,9 @@
 #ifndef __CPU_O3_KLP_LOCK_VIEW_HH__
 #define __CPU_O3_KLP_LOCK_VIEW_HH__
 
-#include <algorithm>
+#include <array>
+#include <cassert>
 #include <cstdint>
-#include <vector>
 
 namespace gem5::o3
 {
@@ -17,6 +17,9 @@ namespace gem5::o3
 /** Per-execution-attempt lock forwarding. Cache snapshots never mutate it. */
 class KlpLockView
 {
+  public:
+    static constexpr unsigned MaxEntries = 8;
+
   private:
     struct Update
     {
@@ -25,14 +28,27 @@ class KlpLockView
         uint64_t seq;
         uint64_t key;
     };
-    std::vector<Update> updates;
+    // Eight scalar bytes can touch at most eight physical lock granules.
+    // Only the bounded RV64 path inserts entries into this sidecar.
+    std::array<Update, MaxEntries> updates{};
+    const unsigned numEntries;
+    unsigned numUpdates = 0;
+    bool overflow = false;
 
   public:
+    explicit KlpLockView(unsigned entries = MaxEntries) : numEntries(entries)
+    {
+        assert(entries && entries <= MaxEntries);
+    }
+
+    unsigned capacity() const { return numEntries; }
+
     /** Return whether this is a new, ordered update (including mismatches). */
     bool
     update(uint64_t granule, bool secure, uint64_t seq, uint64_t key)
     {
-        for (auto &old : updates) {
+        for (unsigned i = 0; i < numUpdates; ++i) {
+            auto &old = updates[i];
             if (old.granule == granule && old.secure == secure) {
                 if (seq <= old.seq)
                     return false;
@@ -40,14 +56,20 @@ class KlpLockView
                 return true;
             }
         }
-        updates.push_back({granule, secure, seq, key});
+        if (numUpdates == numEntries) {
+            // Defensive fail-closed behavior also applies in gem5.fast.
+            overflow = true;
+            return false;
+        }
+        updates[numUpdates++] = {granule, secure, seq, key};
         return true;
     }
 
     bool
     lookup(uint64_t granule, bool secure, uint64_t &key) const
     {
-        for (const auto &update : updates) {
+        for (unsigned i = 0; i < numUpdates; ++i) {
+            const auto &update = updates[i];
             if (update.granule == granule && update.secure == secure) {
                 key = update.key;
                 return true;
@@ -59,14 +81,18 @@ class KlpLockView
     void
     invalidate(uint64_t line, uint64_t lineMask, bool secure)
     {
-        updates.erase(std::remove_if(updates.begin(), updates.end(),
-            [=](const Update &update) {
-                return (update.granule & lineMask) == line &&
-                       update.secure == secure;
-            }), updates.end());
+        unsigned retained = 0;
+        for (unsigned i = 0; i < numUpdates; ++i) {
+            const auto update = updates[i];
+            if ((update.granule & lineMask) != line || update.secure != secure)
+                updates[retained++] = update;
+        }
+        numUpdates = retained;
     }
 
-    void clear() { updates.clear(); }
+    bool overflowed() const { return overflow; }
+
+    void clear() { numUpdates = 0; overflow = false; }
 };
 
 } // namespace gem5::o3

@@ -1365,6 +1365,12 @@ Commit::commitHead(const DynInstPtr &head_inst, unsigned inst_num)
         return false;
     }
 
+    // A finite retirement-side FIFO owns event data after LSQ dequeue.
+    // Do this only after all fault/retirement checks and before any commit
+    // side effects; a full FIFO leaves the instruction at the ROB head.
+    if (!iewStage->retireKlpEvent(head_inst))
+        return false;
+
     updateComInstStats(head_inst);
 
     DPRINTF(Commit,

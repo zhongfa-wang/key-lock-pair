@@ -642,7 +642,7 @@ MemCtrl::accessAndRespond(PacketPtr pkt, Tick static_latency,
         Tick response_time = curTick() + static_latency + pkt->headerDelay +
                              pkt->payloadDelay;
         // Here we reset the timing of the packet before sending it out.
-        pkt->headerDelay = pkt->payloadDelay = 0;
+        pkt->headerDelay = pkt->payloadDelay = pkt->klpMetadataDelay = 0;
 
         // queue the packet in the response queue to be sent out after
         // the static latency has passed

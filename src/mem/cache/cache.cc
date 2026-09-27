@@ -46,6 +46,8 @@
 
 #include "mem/cache/cache.hh"
 
+#include <limits>
+
 #include <cassert>
 
 #include "base/compiler.hh"
@@ -195,6 +197,9 @@ Cache::doWritebacks(PacketList& writebacks, Tick forward_time)
 {
     while (!writebacks.empty()) {
         PacketPtr wbPkt = writebacks.front();
+        const Tick metadata_ready = std::max(forward_time,
+                                             curTick() + wbPkt->headerDelay);
+        wbPkt->headerDelay = wbPkt->klpMetadataDelay = 0;
         // We use forwardLatency here because we are copying writebacks to
         // write buffer.
 
@@ -219,14 +224,14 @@ Cache::doWritebacks(PacketList& writebacks, Tick forward_time)
                 // the Writeback does not reset the bit corresponding to this
                 // address in the snoop filter below.
                 wbPkt->setBlockCached();
-                allocateWriteBuffer(wbPkt, forward_time);
+                allocateWriteBuffer(wbPkt, metadata_ready);
             }
         } else {
             // If the block is not cached above, send packet below. Both
             // CleanEvict and Writeback with BLOCK_CACHED flag cleared will
             // reset the bit corresponding to this address in the snoop filter
             // below.
-            allocateWriteBuffer(wbPkt, forward_time);
+            allocateWriteBuffer(wbPkt, metadata_ready);
         }
         writebacks.pop_front();
     }
@@ -296,8 +301,11 @@ Cache::recvTimingSnoopResp(PacketPtr pkt)
     // To pay the delay that occurs if the packet comes from the bus,
     // we charge also headerDelay.
     Tick snoop_resp_time = clockEdge(forwardLatency) + pkt->headerDelay;
+    snoop_resp_time = std::max(snoop_resp_time, clockEdge() +
+        pkt->headerDelay + pkt->klpMetadataDelay);
     // Reset the timing of the packet.
     pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->klpMetadataDelay = 0;
     memSidePort.schedTimingSnoopResp(pkt, snoop_resp_time);
 }
 
@@ -465,6 +473,7 @@ Cache::recvTimingReq(PacketPtr pkt)
         // also reset the bus time that the original packet has
         // not yet paid for
         snoop_pkt->headerDelay = snoop_pkt->payloadDelay = 0;
+        snoop_pkt->klpMetadataDelay = 0;
 
         // make this an instantaneous express snoop, and let the
         // other caches in the system know that the another cache
@@ -740,6 +749,12 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
         initial_tgt = nullptr;
     }
 
+    // One line snapshot per existing finite MSHR; its bounded target list
+    // receives one broadcast, rather than re-reading the cache array once
+    // per target. Payload timing includes arrival of all metadata bits.
+    bool klp_have_snapshot = pkt->isRead() && pkt->hasData();
+    Tick klp_snapshot_ready = clockEdge() + pkt->headerDelay +
+                              pkt->klpMetadataDelay;
     MSHR::TargetList targets = mshr->extractServiceableTargets(pkt);
     for (auto &target: targets) {
         Packet *tgt_pkt = target.pkt;
@@ -748,6 +763,8 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
             from_core = true;
 
             Tick completion_time;
+            Tick metadata_ready;
+            metadata_ready = 0;
             // Here we charge on completion_time the delay of the xbar if the
             // packet comes from it, charged on headerDelay.
             completion_time = pkt->headerDelay;
@@ -808,6 +825,8 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
             // either); otherwise we use the packet data.
             if (blk && blk->isValid() &&
                 (!mshr->isForward || !pkt->hasData())) {
+                metadata_ready = klpTargetReady(tgt_pkt, pkt, blk,
+                    klp_have_snapshot, klp_snapshot_ready);
                 satisfyRequest(tgt_pkt, blk, true, mshr->hasPostDowngrade());
 
                 // How many bytes past the first request is this one
@@ -824,6 +843,7 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
                 completion_time += clockEdge(responseLatency) +
                     (transfer_offset ? pkt->payloadDelay : 0);
 
+                completion_time = std::max(completion_time, metadata_ready);
                 assert(!tgt_pkt->req->isUncacheable());
 
                 assert(tgt_pkt->req->requestorId() < system->maxRequestors());
@@ -902,6 +922,7 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
                 // carried over to cache above
                 tgt_pkt->copyResponderFlags(pkt);
             }
+            completion_time = std::max(completion_time, metadata_ready);
             tgt_pkt->makeTimingResponse();
             // if this packet is an error copy that to the new packet
             if (is_error)
@@ -917,6 +938,7 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
             }
             // Reset the bus additional time as it is now accounted for
             tgt_pkt->headerDelay = tgt_pkt->payloadDelay = 0;
+            tgt_pkt->klpMetadataDelay = 0;
             cpuSidePort.schedTimingResp(tgt_pkt, completion_time);
             break;
 
@@ -1016,7 +1038,8 @@ Cache::cleanEvictBlk(CacheBlk *blk)
 
 void
 Cache::doTimingSupplyResponse(PacketPtr req_pkt, const uint8_t *blk_data,
-                              bool already_copied, bool pending_inval)
+                              bool already_copied, bool pending_inval,
+                              Tick metadata_ready)
 {
     // sanity check
     assert(req_pkt->isRequest());
@@ -1051,9 +1074,11 @@ Cache::doTimingSupplyResponse(PacketPtr req_pkt, const uint8_t *blk_data,
     // Here we consider forward_time, paying for just forward latency and
     // also charging the delay provided by the xbar.
     // forward_time is used as send_time in next allocateWriteBuffer().
-    Tick forward_time = clockEdge(forwardLatency) + pkt->headerDelay;
+    Tick forward_time = std::max(
+        clockEdge(forwardLatency) + pkt->headerDelay, metadata_ready);
     // Here we reset the timing of the packet.
     pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->klpMetadataDelay = 0;
     DPRINTF(CacheVerbose, "%s: created response: %s tick: %lu\n", __func__,
             pkt->print(), forward_time);
     memSidePort.schedTimingSnoopResp(pkt, forward_time);
@@ -1099,6 +1124,7 @@ Cache::handleSnoop(PacketPtr pkt, CacheBlk *blk, bool is_timing,
             // the snoop packet does not need to wait any additional
             // time
             snoopPkt.headerDelay = snoopPkt.payloadDelay = 0;
+            snoopPkt.klpMetadataDelay = 0;
             cpuSidePort.sendTimingSnoopReq(&snoopPkt);
 
             // add the header delay (including crossbar and snoop
@@ -1138,6 +1164,24 @@ Cache::handleSnoop(PacketPtr pkt, CacheBlk *blk, bool is_timing,
 
     bool respond = false;
     bool blk_valid = blk && blk->isValid();
+    Tick metadata_ready = 0;
+    if (is_timing && klpEnabled && blk_valid) {
+        metadata_ready = std::max(clockEdge() + pkt->headerDelay,
+                                   blk->klpMetadataOrder.writeReady);
+        if (pkt->isRead() && blk->hasValidSecTag())
+            metadata_ready = accessKlpMetadata(metadata_ready, blk);
+    }
+    if (metadata_ready) {
+        const Tick delay = metadata_ready - curTick() - pkt->headerDelay;
+        panic_if(delay > std::numeric_limits<uint32_t>::max(),
+                 "KLP snoop sidecar delay exceeds packet timing range");
+        // recvTimingSnoopReq adds this cache's lookup latency afterwards.
+        // The sidecar runs in parallel; only its excess over that lookup is
+        // additional, and the incoming header must not be counted twice.
+        const Tick lookup = cyclesToTicks(lookupLatency);
+        snoop_delay = std::max<uint32_t>(snoop_delay,
+                                        delay > lookup ? delay - lookup : 0);
+    }
     if (pkt->isClean()) {
         if (blk_valid && blk->isSet(CacheBlk::DirtyBit)) {
             DPRINTF(CacheVerbose, "%s: packet (snoop) %s found block: %s\n",
@@ -1258,7 +1302,8 @@ Cache::handleSnoop(PacketPtr pkt, CacheBlk *blk, bool is_timing,
 
         exportSecTagMetadata(pkt, blk);
         if (is_timing) {
-            doTimingSupplyResponse(pkt, blk->data, is_deferred, pending_inval);
+            doTimingSupplyResponse(pkt, blk->data, is_deferred, pending_inval,
+                                   metadata_ready);
         } else {
             pkt->makeAtomicResponse();
             // packets such as upgrades do not actually have any data
@@ -1347,6 +1392,17 @@ Cache::recvTimingSnoopReq(PacketPtr pkt)
         // Writebacks/CleanEvicts.
         assert(wb_entry->getNumTargets() == 1);
         PacketPtr wb_pkt = wb_entry->getTarget()->pkt;
+        // The bounded write buffer stores the snapshot next to its data;
+        // snoops wait for that snapshot and its modeled read latency.
+        const Tick wb_metadata_ready = wb_pkt->hasSecTagLineMetadataPkt ?
+            accessKlpMetadata(std::max(clockEdge() + pkt->headerDelay,
+                                       wb_entry->getTarget()->readyTime)) : 0;
+        if (wb_metadata_ready) {
+            const Tick delay = wb_metadata_ready - curTick() - pkt->headerDelay;
+            panic_if(delay > std::numeric_limits<uint32_t>::max(),
+                     "KLP write-buffer snoop delay exceeds timing range");
+            pkt->snoopDelay = std::max<uint32_t>(pkt->snoopDelay, delay);
+        }
         assert(wb_pkt->isEviction() || wb_pkt->cmd == MemCmd::WriteClean);
 
         if (pkt->isEviction()) {
@@ -1395,7 +1451,7 @@ Cache::recvTimingSnoopReq(PacketPtr pkt)
 
             pkt->copySecTagLineMetadataFrom(wb_pkt);
             doTimingSupplyResponse(pkt, wb_pkt->getConstPtr<uint8_t>(),
-                                   false, false);
+                                   false, false, wb_metadata_ready);
         }
 
         if (invalidate && wb_pkt->cmd != MemCmd::WriteClean) {

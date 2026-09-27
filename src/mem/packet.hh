@@ -412,6 +412,51 @@ class Packet : public Printable, public Extensible<Packet>
     std::vector<uint64_t> secTagLineValuesPkt;
     std::vector<bool> secTagLineValidBitsPkt;
     unsigned secTagLineGranularityPkt = 0;
+    unsigned secTagLineWidthPkt = 0;
+    unsigned secTagKeyWidthPkt = 0;
+
+    void setSecTagWireWidth(unsigned width)
+    {
+        panic_if(!width || width > 63,
+                 "Invalid KLP wire key width %u", width);
+        secTagKeyWidthPkt = width;
+    }
+
+    /** Packed hardware bits, independent of C++ storage representation.
+     * Two line control bits encode presence and clean-snoop provenance.
+     * Geometry is static link configuration, not a transmitted field.
+     */
+    unsigned secTagLineWireBits() const
+    {
+        if (!hasSecTagLineMetadataPkt)
+            return 0;
+        panic_if(!secTagLineWidthPkt || secTagLineWidthPkt > 63 ||
+                 secTagLineValuesPkt.size() != secTagLineValidBitsPkt.size(),
+                 "KLP line metadata has invalid wire geometry");
+        return 2 + secTagLineValuesPkt.size() * (secTagLineWidthPkt + 1);
+    }
+
+    unsigned klpWireBits() const
+    {
+        unsigned bits = secTagLineWireBits();
+        if (isRequest() && (isKlpRead || isKlpWrite || isKlpLockInstall())) {
+            panic_if(!secTagKeyWidthPkt,
+                     "KLP request is missing its wire key width");
+            // Key + known bit + unconditional bit + two request-kind bits.
+            bits += secTagKeyWidthPkt + 4;
+        }
+        return bits;
+    }
+
+    unsigned klpWireBytes() const
+    {
+        return (klpWireBits() + 7) / 8;
+    }
+
+    unsigned wireSize() const
+    {
+        return (hasData() ? getSize() : 0) + klpWireBytes();
+    }
 
     uint64_t getSecTag() const { return secTagInPkt; }
     void setSecTag(uint64_t key)
@@ -431,6 +476,7 @@ class Packet : public Printable, public Extensible<Packet>
         secTagLineValuesPkt.clear();
         secTagLineValidBitsPkt.clear();
         secTagLineGranularityPkt = 0;
+        secTagLineWidthPkt = 0;
     }
     void copySecTagLineMetadataFrom(const PacketPtr pkt)
     {
@@ -439,6 +485,7 @@ class Packet : public Printable, public Extensible<Packet>
         secTagLineValuesPkt = pkt->secTagLineValuesPkt;
         secTagLineValidBitsPkt = pkt->secTagLineValidBitsPkt;
         secTagLineGranularityPkt = pkt->secTagLineGranularityPkt;
+        secTagLineWidthPkt = pkt->secTagLineWidthPkt;
     }
     void copyKlpStateFrom(const PacketPtr pkt)
     {
@@ -448,6 +495,7 @@ class Packet : public Printable, public Extensible<Packet>
         baseUnknown = pkt->baseUnknown;
         isKlpRead = pkt->isKlpRead;
         isKlpWrite = pkt->isKlpWrite;
+        secTagKeyWidthPkt = pkt->secTagKeyWidthPkt;
         copySecTagLineMetadataFrom(pkt);
     }
     /* If the pkt is from a speculative load or not. */
@@ -535,6 +583,13 @@ class Packet : public Printable, public Extensible<Packet>
      * relative, a 32-bit unsigned should be sufficient.
      */
     uint32_t payloadDelay;
+
+    /** Metadata travels on a finite parallel lane. This is its remaining
+     * tail after headerDelay, independent of the data payload tail. Caches
+     * can forward a critical word once its complete lock has arrived.
+     * Consumers clear this alongside payloadDelay after accepting a hop.
+     */
+    uint32_t klpMetadataDelay = 0;
 
     /**
      * A virtual base opaque structure used to hold state associated
@@ -1044,6 +1099,7 @@ class Packet : public Printable, public Extensible<Packet>
            headerDelay(pkt->headerDelay),
            snoopDelay(0),
            payloadDelay(pkt->payloadDelay),
+           klpMetadataDelay(pkt->klpMetadataDelay),
            senderState(pkt->senderState)
     {
         if (!clear_flags)

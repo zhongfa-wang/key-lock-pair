@@ -99,6 +99,7 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
       tagBitMask(p.system->initWidthMask(p.tag_width)),
       klpEnabled(p.threat_model != "disable"),
       klpStoreInstall(p.klp_store_install),
+      klpMetadataLatency(p.klp_metadata_latency),
       // } [klp]
       cpuSidePort (p.name + ".cpu_side_port", *this, "CpuSidePort"),
       memSidePort(p.name + ".mem_side_port", this, "MemSidePort"),
@@ -149,6 +150,8 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
         genTagExtractor(tags->params().indexing_policy));
 
     if (klpEnabled) {
+        fatal_if(!klpMetadataLatency,
+                 "KLP metadata access latency must be positive");
         fatal_if(!tag_granularity || blkSize % tag_granularity,
                  "KLP granularity must divide the cache line size");
         tempBlock->ensureSecTagStorage(blkSize / tag_granularity);
@@ -171,6 +174,103 @@ BaseCache::~BaseCache()
     delete tempBlock;
 }
 // [klp] {
+Tick
+BaseCache::accessKlpMetadata(Tick arrival, CacheBlk *blk, bool write)
+{
+    if (!klpEnabled)
+        return arrival;
+    // One metadata word belongs to each physical cache line. Match classic
+    // tag/data-array abstraction: charge access latency, but do not reserve
+    // independent SRAM ports or introduce inter-line throughput limits.
+    // Callback order still determines which version a request samples; its
+    // annotated completion must not precede that version becoming visible.
+    const Tick requested = arrival;
+    if (blk)
+        arrival = blk->klpMetadataOrder.ready(arrival, write);
+    stats.klpMetadataHazardTicks += arrival - requested;
+    const Tick edge = clockEdge();
+    const Tick issue = clockEdge(Cycles(divCeil(
+        std::max(arrival, edge) - edge, clockPeriod())));
+    const Tick finish = issue + cyclesToTicks(klpMetadataLatency);
+    ++stats.klpMetadataAccesses;
+    if (write)
+        ++stats.klpMetadataWriteAccesses;
+    else
+        ++stats.klpMetadataReadAccesses;
+    if (blk)
+        blk->klpMetadataOrder.issued(issue, finish, write);
+    return finish;
+}
+
+bool
+BaseCache::writesKlpMetadata(const PacketPtr pkt) const
+{
+    return pkt->isKlpLockInstall() ||
+        (klpStoreInstall && cache_level == enums::CacheLevel::L1D &&
+         pkt->isKlpWrite && pkt->isWrite() && !pkt->isBaseUnknown() &&
+         !pkt->req->isStrictlyOrdered()) ||
+        pkt->isWriteback() || pkt->cmd == MemCmd::WriteClean;
+}
+
+bool
+BaseCache::needsKlpMetadata(const PacketPtr pkt, const CacheBlk *blk) const
+{
+    if (!klpEnabled || pkt->req->isUncacheable() || !blk || !blk->isValid())
+        return false;
+    // The directory's per-line any-lock-valid summary enables an all-invalid
+    // response without reading the sidecar. Control-only requests need no
+    // lock word. A protected core read still uses its comparison datapath.
+    return writesKlpMetadata(pkt) || (pkt->isRead() &&
+        (pkt->isKlpRead || blk->hasValidSecTag()));
+}
+
+Tick
+BaseCache::klpTargetReady(PacketPtr target, const PacketPtr response,
+                         CacheBlk *blk, bool &have_snapshot,
+                         Tick &snapshot_ready)
+{
+    if (!klpEnabled)
+        return 0;
+    const Tick arrival = clockEdge() + response->headerDelay +
+                         response->klpMetadataDelay;
+    if (!needsKlpMetadata(target, blk)) {
+        // Even an all-invalid summary cannot be observed before it arrives.
+        if (target->isRead())
+            return have_snapshot ? snapshot_ready :
+                                   blk->klpMetadataOrder.writeReady;
+        return 0;
+    }
+    if (writesKlpMetadata(target)) {
+        // MSHR targets are processed in coherence order. A new installation
+        // updates the same finite fill-buffer snapshot broadcast to later
+        // targets, but is not visible until its sidecar write completes.
+        snapshot_ready = accessKlpMetadata(
+            std::max(arrival, snapshot_ready), blk, true);
+        have_snapshot = true;
+    } else if (!have_snapshot) {
+        snapshot_ready = accessKlpMetadata(arrival, blk);
+        have_snapshot = true;
+    } else {
+        ++stats.klpMetadataFillForwards;
+    }
+    return snapshot_ready;
+}
+
+void
+BaseCache::timeKlpWriteback(PacketPtr pkt, CacheBlk *blk)
+{
+    if (!klpEnabled || !system->isTimingMode())
+        return;
+    // Snapshot into the existing finite write buffer before reusing a victim.
+    // doWritebacks consumes this local delay when allocating that buffer.
+    const Tick ready = blk->hasValidSecTag() ?
+        accessKlpMetadata(clockEdge(), blk) :
+        std::max(clockEdge(), blk->klpMetadataOrder.writeReady);
+    panic_if(ready - curTick() > std::numeric_limits<uint32_t>::max(),
+             "KLP writeback snapshot delay exceeds packet timing range");
+    pkt->headerDelay = ready - curTick();
+}
+
 void
 BaseCache::exportSecTagMetadata(PacketPtr pkt, const CacheBlk *blk) const
 {
@@ -183,6 +283,7 @@ BaseCache::exportSecTagMetadata(PacketPtr pkt, const CacheBlk *blk) const
     pkt->hasSecTagLineMetadataPkt = true;
     pkt->secTagLineFromCleanSnoopPkt = false;
     pkt->secTagLineGranularityPkt = tag_granularity;
+    pkt->secTagLineWidthPkt = tag_width;
     pkt->secTagLineValuesPkt.assign(granules, 0);
     pkt->secTagLineValidBitsPkt.assign(granules, false);
     if (blk->secTagPtrInCache) {
@@ -205,7 +306,8 @@ BaseCache::importSecTagMetadata(CacheBlk *blk, const PacketPtr pkt)
         blk->invalidateSecTag();
         return;
     }
-    panic_if(pkt->secTagLineGranularityPkt != tag_granularity ||
+    panic_if(pkt->secTagLineWidthPkt != tag_width ||
+             pkt->secTagLineGranularityPkt != tag_granularity ||
              pkt->secTagLineValuesPkt.size() != granules ||
              pkt->secTagLineValidBitsPkt.size() != granules,
              "%s: incompatible KLP line metadata geometry", name());
@@ -213,6 +315,8 @@ BaseCache::importSecTagMetadata(CacheBlk *blk, const PacketPtr pkt)
               pkt->secTagLineValuesPkt.end(), blk->secTagPtrInCache);
     // Replace invalid bits too: merging only valid entries resurrects locks.
     blk->secTagValidBitsInCache = pkt->secTagLineValidBitsPkt;
+    blk->secTagAnyValid = std::any_of(blk->secTagValidBitsInCache.begin(),
+        blk->secTagValidBitsInCache.end(), [](bool valid) { return valid; });
 }
 
 void
@@ -229,6 +333,7 @@ BaseCache::installSecTag(CacheBlk *blk, const PacketPtr pkt)
     for (unsigned i = first; i < end; ++i) {
         blk->secTagPtrInCache[i] = pkt->getSecTag();
         blk->secTagValidBitsInCache[i] = true;
+        blk->secTagAnyValid = true;
     }
     // A metadata-only change must still create an owner. Using the normal
     // dirty state makes snoops and evictions carry the latest data+locks,
@@ -498,6 +603,13 @@ BaseCache::handleTimingReqMiss(PacketPtr pkt, MSHR *mshr, CacheBlk *blk,
 void
 BaseCache::recvTimingReq(PacketPtr pkt)
 {
+    if (klpEnabled && (pkt->isKlpRead || pkt->isKlpWrite ||
+                       pkt->isKlpLockInstall())) {
+        panic_if(pkt->secTagKeyWidthPkt && pkt->secTagKeyWidthPkt != tag_width,
+                 "KLP request/cache key width mismatch");
+        pkt->setSecTagWireWidth(tag_width);
+    }
+    Tick metadata_ready = 0;
     if (klpEnabled && cache_level == enums::CacheLevel::L1D &&
         !pkt->isKlpLockInstall()) {
       if (pkt->isWrite()) {
@@ -520,6 +632,9 @@ BaseCache::recvTimingReq(PacketPtr pkt)
     // anything that is merely forwarded pays for the forward latency and
     // the delay provided by the crossbar
     Tick forward_time = clockEdge(forwardLatency) + pkt->headerDelay;
+    if (klpEnabled)
+        forward_time = std::max(forward_time, clockEdge() +
+            pkt->headerDelay + pkt->klpMetadataDelay);
 
     if (pkt->cmd == MemCmd::LockedRMWWriteReq) {
         // For LockedRMW accesses, we mark the block inaccessible after the
@@ -543,6 +658,21 @@ BaseCache::recvTimingReq(PacketPtr pkt)
         // Note that lat is passed by reference here. The function
         // access() will set the lat value.
         satisfied = access(pkt, blk, lat, writebacks);
+        if (satisfied && needsKlpMetadata(pkt, blk)) {
+            metadata_ready = accessKlpMetadata(clockEdge() +
+                pkt->headerDelay + pkt->klpMetadataDelay, blk,
+                writesKlpMetadata(pkt));
+        } else if (klpEnabled) {
+            ++stats.klpMetadataLookupAvoided;
+            if (satisfied && blk && blk->isValid() && pkt->isRead())
+                metadata_ready = blk->klpMetadataOrder.writeReady;
+        }
+        // Misses only probe the ordinary directory; their lock snapshot is
+        // read from the response/fill buffer. Do not serialize the outbound
+        // miss behind an unrelated sidecar access.
+        if (metadata_ready > clockEdge())
+            lat = std::max(lat, Cycles(divCeil(metadata_ready - clockEdge(),
+                                               clockPeriod())));
 
         // After the evicted blocks are selected, they must be forwarded
         // to the write buffer to ensure they logically precede anything
@@ -558,6 +688,7 @@ BaseCache::recvTimingReq(PacketPtr pkt)
     Tick request_time = clockEdge(lat);
     // Here we reset the timing of the packet.
     pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->klpMetadataDelay = 0;
 
     if (satisfied) {
         // notify before anything else as later handleTimingReqHit might turn
@@ -595,6 +726,7 @@ BaseCache::handleUncacheableWriteResp(PacketPtr pkt)
 
     // Reset the bus additional time as it is now accounted for
     pkt->headerDelay = pkt->payloadDelay = 0;
+    pkt->klpMetadataDelay = 0;
 
     cpuSidePort.schedTimingResp(pkt, completion_time);
 }
@@ -671,6 +803,13 @@ BaseCache::recvTimingResp(PacketPtr pkt)
             writeAllocator->allocate() : mshr->allocOnFill();
         blk = handleFill(pkt, blk, writebacks, allocate);
         assert(blk != nullptr);
+        if (klpEnabled && pkt->isRead()) {
+            // Write the sidecar in parallel with data-array fill. Targets
+            // may forward the response snapshot before either array write
+            // finishes; later independent hits obey this slot's ready time.
+            accessKlpMetadata(clockEdge() + pkt->headerDelay +
+                              pkt->klpMetadataDelay, blk, true);
+        }
         ppFill->notify(CacheAccessProbeArg(pkt, accessor));
     }
 
@@ -1196,6 +1335,13 @@ BaseCache::updateCompressionData(CacheBlk *&blk, const uint64_t* data,
         if (!victim_itself && (replaceExpansions || is_data_contraction)) {
             // Move the block's contents to the invalid block so that it now
             // co-allocates with the other existing superblock entry
+            if (klpEnabled && system->isTimingMode()) {
+                // Compression can relocate a resident line. Account for the
+                // source read and destination write before moving its lock
+                // snapshot; both physical slots keep their ordering state.
+                const Tick read_ready = accessKlpMetadata(clockEdge(), blk);
+                accessKlpMetadata(read_ready, victim, true);
+            }
             tags->moveBlock(blk, victim);
             blk = victim;
             compression_blk = static_cast<CompressionBlk*>(blk);
@@ -1899,6 +2045,7 @@ BaseCache::writebackBlk(CacheBlk *blk)
     pkt->allocate();
     pkt->setDataFromBlock(blk->data, blkSize);
     exportSecTagMetadata(pkt, blk);
+    timeKlpWriteback(pkt, blk);
 
     // When a block is compressed, it must first be decompressed before being
     // sent for writeback.
@@ -1945,6 +2092,7 @@ BaseCache::writecleanBlk(CacheBlk *blk, Request::Flags dest, PacketId id)
     pkt->allocate();
     pkt->setDataFromBlock(blk->data, blkSize);
     exportSecTagMetadata(pkt, blk);
+    timeKlpWriteback(pkt, blk);
 
     // When a block is compressed, it must first be decompressed before being
     // sent for writeback.
@@ -2395,6 +2543,18 @@ BaseCache::CacheStats::CacheStats(BaseCache &c)
     "Retired-load metadata-only lock installations"),
     ADD_STAT(klpStoreInstallNum, statistics::units::Count::get(),
     "Key installations by KLP stores (split fragments counted separately)."),
+    ADD_STAT(klpMetadataAccesses, statistics::units::Count::get(),
+    "Line-wide KLP sidecar accesses including fills, snoops and writebacks"),
+    ADD_STAT(klpMetadataReadAccesses, statistics::units::Count::get(),
+    "Sidecar read samples including snoops and writeback snapshots"),
+    ADD_STAT(klpMetadataWriteAccesses, statistics::units::Count::get(),
+    "Sidecar writes including fills and lock installations"),
+    ADD_STAT(klpMetadataHazardTicks, statistics::units::Tick::get(),
+    "Ticks waiting for same-slot writes or earlier read sample points"),
+    ADD_STAT(klpMetadataFillForwards, statistics::units::Count::get(),
+    "MSHR targets served by a finite fill-buffer metadata broadcast"),
+    ADD_STAT(klpMetadataLookupAvoided, statistics::units::Count::get(),
+    "Misses or requests requiring no sidecar-array lookup"),
     ADD_STAT(failCuzofL1DMissNum, statistics::units::Count::get(),
     "Total number of failed KLP tag verification caused by L1D miss."),
     ADD_STAT(failCuzofTagMismatchNum, statistics::units::Count::get(),

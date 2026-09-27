@@ -142,6 +142,12 @@ LSQ::LSQ(CPU *cpu_ptr, IEW *iew_ptr, const BaseO3CPUParams &params)
       retryRespEvent([this]{ sendRetryResp(); }, name())
 {
     assert(numThreads > 0 && numThreads <= MaxThreads);
+    fatal_if(cpu->isKlpEnabled() && !params.klpStlfCheckWidth,
+             "KLP STLF check width must be positive");
+    fatal_if(!params.klpLockViewEntries ||
+             params.klpLockViewEntries > KlpLockView::MaxEntries,
+             "KLP local lock-view entries must be in [1, %u]",
+             KlpLockView::MaxEntries);
 
     //**********************************************
     //************ Handle SMT Parameters ***********
@@ -218,6 +224,10 @@ LSQ::isDrained() const
             DPRINTF(Drain, "Not drained, KLP metadata writes pending.\n");
             drained = false;
         }
+        if (unit.hasPendingKlpEvents()) {
+            DPRINTF(Drain, "Not drained, KLP retirement events pending.\n");
+            drained = false;
+        }
         if (unit.hasPendingKlpWritebacks()) {
             DPRINTF(Drain, "Not drained, KLP writeback events pending.\n");
             drained = false;
@@ -247,23 +257,36 @@ LSQ::tick()
 
     usedLoadPorts = 0;
     usedStorePorts = 0;
+    usedKlpStlfPorts = 0;
+}
+
+bool
+LSQ::takeKlpStlfPort()
+{
+    // A configurable bank of key comparators, shared by SMT. IQ retries
+    // may bypass FU allocation, so enforce this budget independently of the
+    // ordinary load FU scheduler. The default follows issueWidth.
+    if (usedKlpStlfPorts >= cpu->params().klpStlfCheckWidth)
+        return false;
+    ++usedKlpStlfPorts;
+    assert(usedKlpStlfPorts <= cpu->params().klpStlfCheckWidth);
+    return true;
+}
+
+bool
+LSQ::retireKlpEvent(const DynInstPtr &inst)
+{
+    return thread.at(inst->threadNumber).retireKlpEvent(inst);
 }
 
 void
-LSQ::processKlpInstallEvents(ThreadID tid)
+LSQ::serviceKlpHardware(unsigned &broadcast_budget, unsigned &check_budget)
 {
-    thread.at(tid).processKlpInstallEvents();
-}
-
-void
-LSQ::processEarlyKlpInstallEvents(InstSeqNum youngest_inst, ThreadID tid,
-                                unsigned &broadcast_budget,
-                                unsigned &recheck_budget)
-{
-    if (thread.at(tid).preannounceKlpInstallEvents(
-            youngest_inst, broadcast_budget)) {
-        thread.at(tid).processKlpInstallEvents(true, &recheck_budget);
-    }
+    // Rotating priority shares the physical lanes across all SMT threads.
+    const ThreadID first = cpu->curCycle() % numThreads;
+    for (ThreadID offset = 0; offset < numThreads; ++offset)
+        thread.at((first + offset) % numThreads).serviceKlpHardware(
+            broadcast_budget, check_budget);
 }
 
 void
@@ -1101,7 +1124,8 @@ LSQ::LSQRequest::LSQRequest(
     _state(State::NotIssued),
     _port(*port), _inst(inst), _data(nullptr),
     _res(nullptr), _addr(0), _size(0), _flags(0),
-    _numOutstandingPackets(0), _amo_op(nullptr)
+    _numOutstandingPackets(0), _amo_op(nullptr),
+    klpLockView(_port.klpLockViewEntries())
 {
     flags.set(Flag::IsLoad, isLoad);
     flags.set(Flag::WriteBackToRegister,
@@ -1127,7 +1151,8 @@ LSQ::LSQRequest::LSQRequest(
     _flags(flags_),
     _numOutstandingPackets(0),
     _amo_op(std::move(amo_op)),
-    _hasStaleTranslation(stale_translation)
+    _hasStaleTranslation(stale_translation),
+    klpLockView(_port.klpLockViewEntries())
 {
     flags.set(Flag::IsLoad, isLoad);
     flags.set(Flag::WriteBackToRegister,
@@ -1251,6 +1276,8 @@ LSQ::SingleDataRequest::recvTimingResp(PacketPtr pkt)
     assert(_numOutstandingPackets == 1);
     flags.set(Flag::Complete);
     assert(pkt == _packets.front());
+    if (pkt->isKlpRead)
+        _port.noteKlpFragmentReady(this, 0);
     _port.completeDataAccess(pkt);
     _hasStaleTranslation = false;
     return true;
@@ -1263,6 +1290,8 @@ LSQ::SplitDataRequest::recvTimingResp(PacketPtr pkt)
     while (pktIdx < _packets.size() && pkt != _packets[pktIdx])
         pktIdx++;
     assert(pktIdx < _packets.size());
+    if (pkt->isKlpRead)
+        _port.noteKlpFragmentReady(this, pktIdx);
     numReceivedPackets++;
     if (numReceivedPackets == _packets.size()) {
         flags.set(Flag::Complete);
@@ -1294,6 +1323,7 @@ LSQ::LSQRequest::createReadPacket(const RequestPtr &req)
     if (klp_read) {
         pkt = Packet::createRead(req, _inst->getUncondiState(),
             _inst->getSecTagInDynInst(), _inst->getIsBaseUnknown());
+        pkt->setSecTagWireWidth(_port.klpTagWidth());
     } else {
         pkt = Packet::createRead(req);
     }
@@ -1314,7 +1344,9 @@ LSQ::LSQRequest::createWritePacket(const RequestPtr &req)
     const auto unknown = _inst->getIsBaseUnknown();
     const uint64_t key = unknown == gem5::triStateVal::TRUE ?
         0 : _inst->getSecTagInDynInst();
-    return Packet::createKlpWrite(req, unCondiState, key, unknown);
+    auto *pkt = Packet::createKlpWrite(req, unCondiState, key, unknown);
+    pkt->setSecTagWireWidth(_port.klpTagWidth());
+    return pkt;
 }
 
 void

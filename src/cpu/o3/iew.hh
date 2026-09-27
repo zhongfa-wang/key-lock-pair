@@ -194,6 +194,8 @@ class IEW
 
     /** Admit deferred KLP completions only into the current broadcast slot. */
     bool prepareKlpWriteback();
+    bool retireKlpEvent(const DynInstPtr &inst)
+    { return ldstQueue.retireKlpEvent(inst); }
 
 
     /** Inserts unused instructions of a thread into the skid buffer. */

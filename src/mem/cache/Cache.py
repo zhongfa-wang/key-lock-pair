@@ -96,6 +96,10 @@ class BaseCache(ClockedObject):
     klp_store_install = Param.Bool(
         False, "KLP stores install their key in the L1D granules they write"
     )
+    klp_metadata_latency = Param.Cycles(
+        1, "KLP metadata access latency, parallel to tag/data access; "
+        "SRAM port and bank contention are not modeled"
+    )
     # } [klp]
 
     size = Param.MemorySize("Capacity")

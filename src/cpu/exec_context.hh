@@ -114,18 +114,6 @@ class ExecContext
     {
     }
 
-    /**
-    * Read the actual runtime value currently stored in one of the
-    * instruction's destination operands.
-    *
-    * This is primarily used after load writeback to construct a WEAK
-    * provenance seed from the loaded value.
-    */
-    virtual RegVal
-    getDestRegOperand(const StaticInst *, int)
-    {
-        return 0;
-    }
     // } [klp]
     virtual RegVal getRegOperand(const StaticInst *si, int idx) = 0;
     virtual void getRegOperand(const StaticInst *si, int idx, void *val) = 0;

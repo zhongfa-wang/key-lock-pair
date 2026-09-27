@@ -87,6 +87,19 @@ class BaseXBar(ClockedObject):
     # Width governing the throughput of the crossbar
     width = Param.Unsigned("Datapath width per port (bytes)")
 
+    # A finite metadata lane accompanies each arbitrated request/response
+    # Layer. It starts with the header and runs alongside the data wires;
+    # a longer metadata tail holds the same Layer until it finishes.
+    klp_metadata_width = Param.Unsigned(
+        32, "Parallel metadata width per crossbar port (bits per cycle)"
+    )
+
+    # One shared serialized return lane for clean-snoop lock snapshots.
+    # Requests remain in the existing bounded cache/MSHR hierarchy.
+    klp_snoop_metadata_width = Param.Unsigned(
+        8, "Clean-snoop metadata return-lane width (bits per cycle)"
+    )
+
     # The default port can be left unconnected, or be used to connect
     # a default response port
     default = RequestPort("Port for connecting an optional default responder")

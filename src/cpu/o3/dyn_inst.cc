@@ -705,18 +705,23 @@ DynInst::completeAcc(PacketPtr pkt)
         }
     }
 
+    // Observe the normal load WB payload, after ISA sign/zero extension.
+    // Capture each destination separately: multi-destination instructions may
+    // leave some destinations unwritten. A retry must discard old captures.
+    loadAddrProvResults.assign(isLoad() ? numDestRegs() : 0, std::nullopt);
+    loadAddrProvCapture = isLoad() && pkt != nullptr;
     fault = staticInst->completeAcc(pkt, this, traceData);
+    loadAddrProvCapture = false;
 
     // [klp] {
-    /*
-     * A successful load result becomes a new WEAK provenance seed,
-     * independently of the provenance used to calculate its EA.
-     *
-     * pkt == nullptr is possible when the memory-access predicate is false.
-     * In that case there is no value returned from memory and no WEAK seed
-     * should be created.
-     */
-    if (fault == NoFault && pkt != nullptr && isLoad()) {
+    // Publish metadata only for actual, successful memory results. A fault,
+    // false predicate, null response, or unwritten destination cannot seed a
+    // credential, even if an earlier completion attempt captured a value.
+    if (isLoad()) {
+        const bool valid_result = fault == NoFault && pkt != nullptr &&
+            readPredicate() && readMemAccPredicate();
+        const AddrProvOrigin clear_origin = valid_result ?
+            AddrProvOrigin::MemoryPending : AddrProvOrigin::FaultOrPredicate;
         for (int dest_idx = 0;
              dest_idx < static_cast<int>(numDestRegs());
              ++dest_idx) {
@@ -733,13 +738,13 @@ DynInst::completeAcc(PacketPtr pkt)
                 continue;
             }
 
-            /*
-             * completeAcc() has already performed op_wb, so this is the
-             * actual value returned by the load and stored in the physical
-             * destination register.
-             */
-            const RegVal loaded_value =
-                getDestRegOperand(staticInst.get(), dest_idx);
+            if (!valid_result || !loadAddrProvResults[dest_idx]) {
+                setAddrProvOperand(staticInst.get(), dest_idx,
+                    noneAddrProv(clear_origin, pcState().instAddr()));
+                continue;
+            }
+
+            const RegVal loaded_value = *loadAddrProvResults[dest_idx];
 
             setAddrProvOperand(
                 staticInst.get(),
@@ -772,6 +777,8 @@ DynInst::completeAcc(PacketPtr pkt)
                     loaded_value);
         }
     }
+    // The WB bus observation is local to this completion call.
+    loadAddrProvResults.clear();
     // } [klp]
 
     thread->noSquashFromTC = no_squash_from_TC;

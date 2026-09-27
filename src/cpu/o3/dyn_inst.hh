@@ -45,9 +45,12 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <list>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "base/refcnt.hh"
 #include "base/trace.hh"
@@ -157,7 +160,7 @@ class DynInst : public ExecContext, public RefCounted
     void tryAddrProvCompare();
 
     // Fixed-size EX input/result latches. Capture normal ISA accesses, before
-    // word casts and shifts; never reread the PRF to recover oracle inputs.
+    // word casts and shifts; never reread the PRF to recover comparison inputs.
     std::array<RegVal, 2> addrProvInputs{};
     std::array<AddrProv, 2> addrProvInputMetadata{};
     std::array<bool, 2> addrProvInputValid{};
@@ -169,6 +172,22 @@ class DynInst : public ExecContext, public RefCounted
     unsigned addrProvXlen = 0;
     AddrProvCompare addrProvComparison{};
     int klpComparatorFu = -1;
+
+    // Load WB taps the same final, extended value written to the PRF. Slots
+    // are bounded by this instruction's decoded destinations, and are reset
+    // for each completion attempt. No extra PRF read port is implied.
+    bool loadAddrProvCapture = false;
+    std::vector<std::optional<RegVal>> loadAddrProvResults;
+
+    void
+    captureLoadAddrProvResult(int idx, RegVal value, PhysRegIdPtr reg)
+    {
+        if (!loadAddrProvCapture || !reg->is(IntRegClass))
+            return;
+        assert(idx >= 0 &&
+               static_cast<size_t>(idx) < loadAddrProvResults.size());
+        loadAddrProvResults[idx] = value;
+    }
     // } [klp]
 
     enum Status
@@ -1268,18 +1287,6 @@ class DynInst : public ExecContext, public RefCounted
         cpu->setAddrProv(reg, prov);
     }
 
-    RegVal
-    getDestRegOperand(const StaticInst *, int dest_idx) override
-    {
-        const PhysRegIdPtr reg = renamedDestIdx(dest_idx);
-
-        if (reg == nullptr ||
-          reg->is(InvalidRegClass) ||
-          !reg->is(IntRegClass)) {
-            return 0;}
-
-        return cpu->getRegNoStats(reg);
-    }
     // } [klp]
     void *
     getWritableRegOperand(const StaticInst *si, int idx) override
@@ -1297,6 +1304,7 @@ class DynInst : public ExecContext, public RefCounted
         if (reg->is(InvalidRegClass))
             return;
         cpu->setReg(reg, val, threadNumber);
+        captureLoadAddrProvResult(idx, val, reg);
         if (addrProvCapture && idx == 0 && reg->is(IntRegClass)) {
             addrProvResult = val;
             addrProvResultValid = true;
@@ -1311,6 +1319,13 @@ class DynInst : public ExecContext, public RefCounted
         if (reg->is(InvalidRegClass))
             return;
         cpu->setReg(reg, val, threadNumber);
+        if (loadAddrProvCapture && reg->is(IntRegClass)) {
+            // Integer buffer writes carry a host RegVal, just like the PRF
+            // buffer accessor. Copy rather than assuming pointer alignment.
+            RegVal value;
+            std::memcpy(&value, val, sizeof(value));
+            captureLoadAddrProvResult(idx, value, reg);
+        }
         setResult(reg->regClass(), val);
     }
 };

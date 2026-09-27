@@ -45,6 +45,8 @@
 
 #include "mem/xbar.hh"
 
+#include <algorithm>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -64,6 +66,16 @@ BaseXBar::BaseXBar(const BaseXBarParams &p)
       responseLatency(p.response_latency),
       headerLatency(p.header_latency),
       width(p.width),
+      klpMetadataWidth(p.klp_metadata_width),
+      klpSnoopMetadataWidth(p.klp_snoop_metadata_width),
+      ADD_STAT(klpSnoopMetadataTransfers, statistics::units::Count::get(),
+               "Serialized clean-snoop metadata transfers"),
+      ADD_STAT(klpSnoopMetadataBytes, statistics::units::Byte::get(),
+               "Packed clean-snoop metadata bytes"),
+      ADD_STAT(klpSnoopMetadataWaitTicks, statistics::units::Tick::get(),
+               "Clean-snoop return-lane contention and clock-alignment ticks"),
+      ADD_STAT(klpSnoopMetadataRetries, statistics::units::Count::get(),
+               "Clean-snoop reservations rolled back on rejected sends"),
       gotAddrRanges(p.port_default_connection_count +
                           p.port_mem_side_ports_connection_count, false),
       gotAllAddrRanges(false), defaultPortID(InvalidPortID),
@@ -76,6 +88,8 @@ BaseXBar::BaseXBar(const BaseXBarParams &p)
       ADD_STAT(pktSize, statistics::units::Byte::get(),
                "Cumulative packet size per connected requestor and responder")
 {
+    fatal_if(!width || !klpMetadataWidth || !klpSnoopMetadataWidth,
+             "Crossbar data and metadata lane widths must be positive");
 }
 
 BaseXBar::~BaseXBar()
@@ -126,20 +140,69 @@ BaseXBar::calcPacketTiming(PacketPtr pkt, Tick header_delay)
     panic_if(pkt->headerDelay > sim_clock::as_int::us,
              "Encountered header delay exceeding 1 us\n");
 
-    if (pkt->hasData()) {
-        // the payloadDelay takes into account the relative time to
-        // deliver the payload of the packet, after the header delay,
-        // we take the maximum since the payload delay could already
-        // be longer than what this parcitular crossbar enforces.
-        pkt->payloadDelay = std::max<Tick>(pkt->payloadDelay,
-                                           divCeil(pkt->getSize(), width) *
-                                           clockPeriod());
-    }
+    calcPacketPayloadDelay(pkt, header_delay);
 
     // the payload delay is not paying for the clock offset as that is
     // already done using the header delay, and the payload delay is
     // also used to determine how long the crossbar layer is busy and
     // thus regulates throughput
+}
+
+void
+BaseXBar::calcPacketPayloadDelay(PacketPtr pkt, Tick header_delay)
+{
+    // Each existing Layer arbitrates a data path and an additional finite
+    // metadata lane together. Metadata starts with the packet header; only
+    // its tail beyond that header phase extends occupancy/completion. It is
+    // never sent on a free, unarbitrated channel. Narrow metadata lanes and
+    // larger lock snapshots backpressure exactly like a long data payload.
+    const Tick data_delay = pkt->hasData() ?
+        divCeil(pkt->getSize(), width) * clockPeriod() : 0;
+    const Tick metadata_delay =
+        divCeil(pkt->klpWireBits(), klpMetadataWidth) * clockPeriod();
+    const Tick header_overlap = std::min<Tick>(
+        cyclesToTicks(headerLatency), header_delay);
+    const Tick metadata_tail = metadata_delay > header_overlap ?
+        metadata_delay - header_overlap : 0;
+    pkt->klpMetadataDelay = std::max<Tick>(pkt->klpMetadataDelay,
+                                          metadata_tail);
+    pkt->payloadDelay = std::max<Tick>({pkt->payloadDelay, data_delay,
+                                      pkt->klpMetadataDelay});
+}
+
+BaseXBar::KlpSnoopReservation
+BaseXBar::chargeKlpSnoopMetadata(PacketPtr pkt)
+{
+    assert(pkt->secTagLineFromCleanSnoopPkt);
+    const unsigned bits = pkt->secTagLineWireBits();
+    assert(bits);
+    const Tick service = divCeil(bits, klpSnoopMetadataWidth) * clockPeriod();
+    const Tick arrival = curTick() + pkt->headerDelay;
+    const Tick edge = clockEdge();
+    const Tick begin = edge + divCeil(
+        std::max({arrival, klpSnoopMetadataReady, edge}) - edge,
+        clockPeriod()) * clockPeriod();
+    const KlpSnoopReservation reservation{
+        klpSnoopMetadataReady, begin + service, begin - arrival};
+    klpSnoopMetadataReady = reservation.finish;
+    const Tick delay = reservation.finish - curTick();
+    panic_if(delay > std::numeric_limits<uint32_t>::max(),
+             "KLP snoop metadata delay exceeds packet timing range");
+    pkt->headerDelay = delay;
+    // The snapshot also traverses the ordinary, finite metadata lane on
+    // downward requests and returning data. Recompute after adding it.
+    calcPacketPayloadDelay(pkt,
+        cyclesToTicks(frontendLatency + forwardLatency));
+    return reservation;
+}
+
+void
+BaseXBar::rollbackKlpSnoopMetadata(const KlpSnoopReservation &reservation)
+{
+    // A synchronous rejected send cannot interleave another reservation on
+    // this crossbar. Restore the lane along with the packet's timing fields.
+    assert(klpSnoopMetadataReady == reservation.finish);
+    klpSnoopMetadataReady = reservation.previous;
 }
 
 template <typename SrcType, typename DstType>
