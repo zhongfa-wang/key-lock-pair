@@ -96,8 +96,8 @@ IEW::IEW(CPU *_cpu, const BaseO3CPUParams &params)
 
     fatal_if(cpu->isKlpEnabled() &&
              (!params.klpEarlyInstallWidth || !params.klpEarlyRecheckWidth ||
-              !params.klpInstallEventEntries || params.klpCheckLatency < Cycles(1)),
-             "KLP hardware widths, event capacity and check latency must be positive");
+              !params.klpInstallEventEntries),
+             "KLP hardware widths and event capacity must be positive");
     fatal_if(params.klpEarlyRecheckWidth > params.LQEntries,
              "KLP validation width exceeds the configured load queue");
 
