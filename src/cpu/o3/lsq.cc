@@ -261,6 +261,21 @@ LSQ::tick()
 }
 
 bool
+LSQ::takeKlpDataPort()
+{
+    // Memory callbacks can run on either side of the CPU tick. Reset by
+    // cycle number, not tick(), so both paths share exactly one budget.
+    if (klpDataPortCycle != cpu->curCycle()) {
+        klpDataPortCycle = cpu->curCycle();
+        usedKlpDataPorts = 0;
+    }
+    if (usedKlpDataPorts >= cpu->params().wbWidth)
+        return false;
+    ++usedKlpDataPorts;
+    return true;
+}
+
+bool
 LSQ::takeKlpStlfPort()
 {
     // A configurable bank of key comparators, shared by SMT. IQ retries
@@ -1225,6 +1240,23 @@ LSQ::LSQRequest::~LSQRequest()
     for (auto r: _packets)
         delete r;
 };
+
+void
+LSQ::LSQRequest::releaseKlpPayload()
+{
+    // Outstanding packets (including cache-side copies) may still share
+    // memData. Authorization never controls the lifetime of this scratch.
+    if (!_inst->klpDataPrepared || _numOutstandingPackets || !isComplete() ||
+        !_inst->memData)
+        return;
+    for (auto *pkt : _packets)
+        pkt->deleteData();
+    if (isSplit())
+        mainPacket()->deleteData();
+    delete [] _inst->memData;
+    _inst->memData = nullptr;
+    _port.noteKlpPayloadRelease(_size);
+}
 
 ContextID
 LSQ::LSQRequest::contextId() const

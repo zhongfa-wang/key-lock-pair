@@ -291,7 +291,8 @@ class LSQ
         bool _hasStaleTranslation;
         // Scoped to this request attempt: never inherited by an IQ replay.
         KlpLockView klpLockView;
-        std::vector<uint8_t> klpForwardData;
+        // The selected load value lives in its destination PRF, not here.
+        bool klpDataFromEvent = false;
         bool klpResultDelivered = false;
         bool klpEventTouched = false;
         bool klpCheckPending = false;
@@ -383,6 +384,9 @@ class LSQ
         virtual ~LSQRequest();
 
       public:
+        /** Drop completed transport storage while retaining lock metadata. */
+        void releaseKlpPayload();
+
         /** Convenience getters/setters. */
         /** @{ */
         /** Set up Context numbers. */
@@ -586,6 +590,7 @@ class LSQ
         {
             assert(_numOutstandingPackets > 0);
             _numOutstandingPackets--;
+            releaseKlpPayload();
             // A detached request can still be pinned by a WritebackEvent.
             // Receiving its last cache reply is not sufficient to free it.
             if (isReleased() && !isAnyOutstandingRequest())
@@ -751,6 +756,9 @@ class LSQ
     void serviceKlpHardware(unsigned &broadcast_budget, unsigned &check_budget);
     /** Dedicated key sidecars on the finite memory-execution lanes. */
     bool takeKlpStlfPort();
+
+    /** Bounded load-result write bandwidth, shared by cache/events and SMT. */
+    bool takeKlpDataPort();
     void noteKlpSquash(InstSeqNum after, ThreadID tid);
 
 
@@ -977,6 +985,8 @@ class LSQ
     /** The number of used cache ports in this cycle by loads. */
     int usedLoadPorts;
     unsigned usedKlpStlfPorts = 0;
+    unsigned usedKlpDataPorts = 0;
+    Cycles klpDataPortCycle = Cycles(0);
 
     /** If the LSQ is currently waiting for stale translations */
     bool waitingForStaleTranslation;

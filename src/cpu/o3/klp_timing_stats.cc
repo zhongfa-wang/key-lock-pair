@@ -162,7 +162,7 @@ KlpTimingStats::recordGrant(DynInst &inst)
         return;
     d.grantValid = true;
     d.grantCycle = cpu->curCycle();
-    d.grantHeld = inst.klpDataBuffered;
+    d.grantHeld = inst.klpWaitingForAuthorization;
     d.grantStlfBlocked = !d.grantHeld && inst.klpStlfBlocked;
     d.grantHeldStartValid = d.grantHeld && d.cacheHoldValid;
     d.grantHeldStartCycle = d.cacheHoldCycle;

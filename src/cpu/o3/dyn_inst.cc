@@ -671,6 +671,11 @@ DynInst::execute()
 Fault
 DynInst::initiateAcc()
 {
+    // Translation, cache backpressure and STLF retries precede response
+    // completion. Once a result is in the PRF, authorization only publishes
+    // it; an actual memory-order replay squashes this execution attempt.
+    assert(!klpDataPrepared);
+
     // @todo: Pretty convoluted way to avoid squashing from happening
     // when using the TC during an instruction's execution
     // (specifically for instructions that have side-effects that use
@@ -686,6 +691,34 @@ DynInst::initiateAcc()
 
     thread->noSquashFromTC = no_squash_from_TC;
 
+    return fault;
+}
+
+bool
+DynInst::supportsKlpEarlyData() const
+{
+    if (!isKlpLoad() || !isLoad() || isAtomic() || isStoreConditional() ||
+        isInstPrefetch() || isDataPrefetch() || isVector() || isHtmCmd() ||
+        numDestRegs() != 1) {
+        return false;
+    }
+
+    // The decoder records an integer destination count even for x0, whose
+    // RegId itself is invalid because it has no physical register storage.
+    return numDestRegs(IntRegClass) == 1 || numDestRegs(FloatRegClass) == 1;
+}
+
+Fault
+DynInst::prepareKlpLoadData(PacketPtr pkt)
+{
+    assert(supportsKlpEarlyData());
+    assert(pkt != nullptr && fault == NoFault);
+    assert(!isSquashed() && !isExecuted() && !klpDataPrepared);
+
+    completeAcc(pkt);
+    // Also remember a completion that raised an ISA fault (e.g., FP off).
+    // Such a result is sent to fault handling, never published to consumers.
+    klpDataPrepared = true;
     return fault;
 }
 

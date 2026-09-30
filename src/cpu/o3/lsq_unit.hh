@@ -310,8 +310,13 @@ class LSQUnit
      * memory system. */
     void completeDataAccess(PacketPtr pkt);
     void noteKlpFragmentReady(LSQRequest *request, unsigned index);
+    void noteKlpPayloadRelease(unsigned bytes)
+    {
+        ++stats.klpPayloadReleases;
+        stats.klpPayloadBytesReleased += bytes;
+    }
 
-    /** Release buffered data, or wake a key-blocked STLF, upon authorization. */
+    /** Publish a prepared result, or wake key-blocked STLF, on authorization. */
     void grantKlpUncondi(const DynInstPtr &inst);
     unsigned klpTagWidth() const { return cpu->getParaTagWidth(); }
     unsigned klpLockViewEntries() const
@@ -448,6 +453,8 @@ class LSQUnit
         unsigned numRanges = 0;
         unsigned numRecords = 0;
         unsigned nextRecord = 0;
+        // Resume a fanout when finite PRF write bandwidth is exhausted.
+        InstSeqNum lastLoad = 0;
         bool store = false;
         bool cancelled = false;
         Addr storeAddr = 0;
@@ -477,8 +484,11 @@ class LSQUnit
     bool klpPendingEventHazard(const DynInstPtr &inst, LSQRequest *request);
     bool klpSnapshotsReady(LSQRequest *request) const;
     void scheduleKlpCheck(LSQRequest *request, bool input_changed = true);
-    void broadcastKlpRecord(const KlpInstallEvent &event,
+    bool broadcastKlpRecord(KlpInstallEvent &event,
                             const KlpInstallEvent::Record &record);
+    bool canPrepareKlpData(const DynInstPtr &inst, LSQRequest *request) const;
+    bool prepareKlpData(const DynInstPtr &inst, LSQRequest *request,
+                        PacketPtr pkt);
     void finishKlpWait(const DynInstPtr &inst);
     void noteKlpDataReady(const DynInstPtr &inst);
     void noteKlpHold(const DynInstPtr &inst);
@@ -541,7 +551,8 @@ class LSQUnit
       public:
         /** Constructs a writeback event. */
         WritebackEvent(const DynInstPtr &_inst, PacketPtr pkt,
-                LSQUnit *lsq_ptr, bool klp_deferred = false);
+                LSQUnit *lsq_ptr, bool klp_deferred = false,
+                bool owns_packet = true);
 
         /** Processes the writeback event. */
         void process();
@@ -559,6 +570,7 @@ class LSQUnit
         /** The pointer to the LSQ unit that issued the store. */
         LSQUnit *lsqPtr;
         const bool klpDeferred;
+        const bool ownsPacket;
     };
 
   public:
@@ -674,6 +686,12 @@ class LSQUnit
         statistics::Scalar klpEventReleasedLoads;
         statistics::Scalar klpEventStoreForwards;
         statistics::Scalar klpWritebackRetries;
+        statistics::Scalar klpPrfPreparations;
+        statistics::Scalar klpPayloadReleases;
+        statistics::Scalar klpPayloadBytesReleased;
+        statistics::Scalar klpPrfWriteStalls;
+        statistics::Scalar klpPrfPublications;
+        statistics::Scalar klpEventDataAlreadyPrepared;
         statistics::Scalar klpDisjointCandidates;
         statistics::Scalar klpDisjointWriterBlocked;
         statistics::Scalar klpDisjointUpdates;

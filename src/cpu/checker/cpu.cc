@@ -234,7 +234,8 @@ CheckerCPU::readMem(Addr addr, uint8_t *data, unsigned size,
         // Setup for accessing next cache line
         frag_addr += frag_size;
         data += frag_size;
-        unverifiedMemData += frag_size;
+        if (unverifiedMemData)
+            unverifiedMemData += frag_size;
     }
 
     if (!flags_match) {

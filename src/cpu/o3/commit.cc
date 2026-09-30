@@ -974,7 +974,7 @@ Commit::resolveInstsByThreatModel(bool after_retire)
                     ++stats.klpPostRetireBudgetExhausted;
                 for (const auto &inst : authorized) {
                     assert(inst->threadNumber == tid);
-                    if (inst->klpDataBuffered)
+                    if (inst->klpWaitingForAuthorization)
                         ++stats.klpPostRetireGrantsHeld;
                     else if (inst->klpStlfBlocked)
                         ++stats.klpPostRetireGrantsStlfBlocked;

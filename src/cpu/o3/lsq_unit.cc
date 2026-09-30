@@ -70,10 +70,11 @@ namespace o3
 {
 
 LSQUnit::WritebackEvent::WritebackEvent(const DynInstPtr &_inst,
-        PacketPtr _pkt, LSQUnit *lsq_ptr, bool klp_deferred)
+        PacketPtr _pkt, LSQUnit *lsq_ptr, bool klp_deferred,
+        bool owns_packet)
     : Event(Default_Pri, AutoDelete),
       inst(_inst), pkt(_pkt), lsqPtr(lsq_ptr),
-      klpDeferred(klp_deferred)
+      klpDeferred(klp_deferred), ownsPacket(owns_packet)
 {
     assert(_inst->savedRequest);
     _inst->savedRequest->writebackScheduled();
@@ -107,7 +108,8 @@ LSQUnit::WritebackEvent::process()
         lsqPtr->cpu->wakeCPU();
         lsqPtr->cpu->activityThisCycle();
     }
-    delete pkt;
+    if (ownsPacket)
+        delete pkt;
 }
 
 const char *
@@ -139,7 +141,7 @@ LSQUnit::noteKlpFragmentReady(LSQRequest *request, unsigned index)
     const auto &inst = request->instruction();
     if (!request->klpResultDelivered && !request->isReleased() &&
         !inst->isSquashed() && inst->seqNum <= klpSquashAfter &&
-        (request->klpCheckPending || !request->klpForwardData.empty()))
+        (request->klpCheckPending || inst->klpDataPrepared))
         scheduleKlpCheck(request);
 }
 
@@ -204,27 +206,28 @@ LSQUnit::completeDataAccess(PacketPtr pkt)
     if (request->klpResultDelivered)
         return;
     if (inst->isKlpLoad() && inst->seqNum > klpSquashAfter) {
-        inst->klpDataBuffered = false;
+        inst->klpWaitingForAuthorization = false;
         inst->klpNeedsInstall = false;
         request->klpLockView.clear();
-        request->klpForwardData.clear();
         return;
     }
 
     cpu->ppDataAccessComplete->notify(std::make_pair(inst, pkt));
 
     // This callback is reached only after every split fragment has returned.
-    // Faults and squash bypass KLP buffering, so normal recovery still wins.
+    // Faults and squash bypass KLP checks, so normal recovery still wins.
     if (pkt->isKlpRead && !inst->isSquashed() && inst->fault == NoFault) {
-        // Responses occupy their existing LQ entry until a physical check lane
-        // accepts them. Never validate directly in a memory callback.
+        // Data uses ordinary ISA completion as soon as a load write port is
+        // available. Neither this write nor its provenance makes rd ready.
+        // Verification stays on the existing bounded check pipeline.
         noteKlpDataReady(inst);
+        if (!inst->klpDataPrepared && canPrepareKlpData(inst, request))
+            prepareKlpData(inst, request, pkt);
         scheduleKlpCheck(request);
         return;
     } else if (inst->fault != NoFault || inst->isSquashed()) {
         request->klpLockView.clear();
-        request->klpForwardData.clear();
-        inst->klpDataBuffered = false;
+        inst->klpWaitingForAuthorization = false;
         inst->klpNeedsInstall = false;
     }
 
@@ -372,10 +375,10 @@ LSQUnit::grantKlpUncondi(const DynInstPtr &inst)
     if (inst->isSquashed() || inst->seqNum > klpSquashAfter)
         return;
     assert(inst->isUncondi());
-    if (inst->klpDataBuffered) {
+    if (inst->klpWaitingForAuthorization) {
         LSQRequest *request = inst->savedRequest;
         assert(request && (request->isComplete() ||
-                           !request->klpForwardData.empty()));
+                           inst->klpDataPrepared));
         // Authorization changes no comparator input. A registered verdict
         // already covers every fragment/granule and also determines whether
         // retirement must install a lock. Reuse it through normal WB admission.
@@ -440,7 +443,6 @@ LSQUnit::noteKlpSquash(InstSeqNum after)
         if (entry.instruction()->seqNum > klpSquashAfter &&
             entry.hasRequest()) {
             entry.request()->klpLockView.clear();
-            entry.request()->klpForwardData.clear();
             entry.request()->klpEventTouched = false;
             entry.request()->klpCheckPending = false;
             entry.request()->klpCheckResultValid = false;
@@ -736,15 +738,19 @@ LSQUnit::scheduleKlpCheck(LSQRequest *request, bool input_changed)
     cpu->activityThisCycle();
 }
 
-void
-LSQUnit::broadcastKlpRecord(const KlpInstallEvent &event,
+bool
+LSQUnit::broadcastKlpRecord(KlpInstallEvent &event,
                            const KlpInstallEvent::Record &record)
 {
     const unsigned granularity = cpu->getParaTagGranularity();
-    // A lane has a CAM across the fixed LQ, two physical-range comparators
-    // per entry, and a single 8-byte data bus. Fanout does not add read ports.
+    // The event owns one eight-byte value. Recipients consume it directly
+    // through finite load PRF write ports; no per-load forwarding copy exists.
     for (auto &entry : loadQueue) {
         const auto &inst = entry.instruction();
+        if (inst->seqNum <= event.lastLoad)
+            continue;
+        const auto previous_load = event.lastLoad;
+        event.lastLoad = inst->seqNum;
         LSQRequest *request = entry.request();
         if (inst->seqNum <= event.seq || !klpEventTarget(inst, request) ||
             !klpScalarBroadcasts(request))
@@ -770,46 +776,61 @@ LSQUnit::broadcastKlpRecord(const KlpInstallEvent &event,
                     continue;
             }
         }
+        const bool had_data = request->isComplete() || inst->klpDataPrepared;
+        if (event.store && !disjoint) {
+            // Unsupported/special loads keep their ordinary completion path.
+            if (!canPrepareKlpData(inst, request))
+                continue;
+            if (!inst->klpDataPrepared) {
+                Packet data(request->mainReq(), MemCmd::ReadResp);
+                const unsigned offset = request->_addr - event.storeAddr;
+                data.dataStatic(event.data.data() + offset);
+                // A response that already arrived is the selected source.
+                // A later event changes authorization, not that data choice.
+                if (!prepareKlpData(inst, request, request->isComplete() ?
+                                    request->mainPacket() : &data)) {
+                    event.lastLoad = previous_load;
+                    return false;
+                }
+                request->klpDataFromEvent = !request->isComplete();
+                scheduleKlpCheck(request);
+            } else {
+                ++stats.klpEventDataAlreadyPrepared;
+            }
+        }
         uint64_t previous_key = 0;
         const bool key_changed = !request->klpLockView.lookup(
             record.granule, record.secure, previous_key) ||
             previous_key != event.key;
-        const bool had_data = request->isComplete() ||
-                              !request->klpForwardData.empty();
         if (!request->klpLockView.update(record.granule, record.secure,
                                           event.seq, event.key))
             continue;
         request->klpEventTouched = true;
         ++stats.klpEventLoadMatches;
-        bool new_forward = false;
         if (disjoint) {
             request->klpDisjointPending = true;
             ++stats.klpDisjointUpdates;
-        } else if (event.store) {
-            new_forward = request->klpForwardData.empty();
-            request->klpForwardData.resize(request->_size);
-            const unsigned offset = request->_addr - event.storeAddr;
-            std::memcpy(request->klpForwardData.data(),
-                        event.data.data() + offset, request->_size);
         }
-        // A newer sequence carrying the same key updates ordering state,
-        // but does not restart a comparator already waiting on that value.
-        // First availability of forwarded data still enters the pipeline.
-        const bool data_ready = request->isComplete() ||
-                                !request->klpForwardData.empty();
-        if (key_changed || new_forward || (!had_data && data_ready))
+        const bool data_ready = request->isComplete() || inst->klpDataPrepared;
+        if (key_changed || (!had_data && data_ready))
             scheduleKlpCheck(request);
         else if (!request->klpCheckResultValid)
             scheduleKlpCheck(request, false);
-        if (!request->isComplete() && request->klpForwardData.empty())
+        if (!data_ready)
             ++stats.klpEventDeferred;
     }
+    event.lastLoad = 0;
+    return true;
 }
 
 void
 LSQUnit::serviceKlpHardware(unsigned &broadcast_budget, unsigned &check_budget)
 {
-    assert(klpLastServiceTick != curTick());
+    // A completion can wake an O3 CPU that went idle earlier at this same
+    // tick. Do not issue the shared KLP resources a second time: any newly
+    // queued work already records activity and is serviced next cycle.
+    if (klpLastServiceTick == curTick())
+        return;
     klpLastServiceTick = curTick();
     assert(klpInstallEvents.size() <= cpu->params().klpInstallEventEntries);
     assert(klpEventsAccepted - klpEventsFinished == klpInstallEvents.size());
@@ -839,6 +860,20 @@ LSQUnit::serviceKlpHardware(unsigned &broadcast_budget, unsigned &check_budget)
         ++stats.klpStlfWakeReleased;
         iewStage->retryKlpLoad(inst);
     }
+    // Drain returned data independently of authorization/check-lane limits.
+    // A busy write port retains only the existing bounded transport storage.
+    bool pending_data = false;
+    for (auto &entry : loadQueue) {
+        const auto &inst = entry.instruction();
+        auto *request = entry.request();
+        if (!request || !request->isComplete() || request->klpResultDelivered ||
+            inst->klpDataPrepared || inst->isSquashed() ||
+            inst->seqNum > klpSquashAfter || inst->fault != NoFault ||
+            !canPrepareKlpData(inst, request))
+            continue;
+        if (!prepareKlpData(inst, request, request->mainPacket()))
+            pending_data = true;
+    }
     while (!klpInstallEvents.empty()) {
         auto &event = klpInstallEvents.front();
         if (event.cancelled) {
@@ -851,7 +886,9 @@ LSQUnit::serviceKlpHardware(unsigned &broadcast_budget, unsigned &check_budget)
             break;
         --broadcast_budget;
         ++stats.klpEventBroadcasts;
-        broadcastKlpRecord(event, event.records[event.nextRecord++]);
+        if (!broadcastKlpRecord(event, event.records[event.nextRecord]))
+            break;
+        ++event.nextRecord;
         if (event.nextRecord == event.numRecords) {
             klpInstallEvents.pop_front();
             ++stats.klpEventCompleted;
@@ -860,7 +897,8 @@ LSQUnit::serviceKlpHardware(unsigned &broadcast_budget, unsigned &check_budget)
     }
     // Only an older, remaining record that can update this load's view is
     // a hazard. Unrelated addresses proceed while the bounded FIFO drains.
-    bool pending = pending_stlf_wake || !klpInstallEvents.empty();
+    bool pending = pending_data || pending_stlf_wake ||
+                   !klpInstallEvents.empty();
     for (auto &entry : loadQueue) {
         const auto &inst = entry.instruction();
         LSQRequest *request = entry.request();
@@ -872,7 +910,10 @@ LSQUnit::serviceKlpHardware(unsigned &broadcast_budget, unsigned &check_budget)
             continue;
         }
         pending = true;
-        if (!request->isComplete() && request->klpForwardData.empty())
+        if (!request->isComplete() && !inst->klpDataPrepared)
+            continue;
+        if (inst->fault == NoFault && !inst->klpDataPrepared &&
+            canPrepareKlpData(inst, request))
             continue;
         if (request->klpCheckReady > curTick())
             continue;
@@ -920,12 +961,12 @@ LSQUnit::serviceKlpHardware(unsigned &broadcast_budget, unsigned &check_budget)
         if (passed || inst->isUncondi() || inst->fault != NoFault) {
             if (passed && !inst->isUncondi() && had_event)
                 ++stats.klpEventReleasedLoads;
-            if (inst->klpDataBuffered && inst->isUncondi())
+            if (inst->klpWaitingForAuthorization && inst->isUncondi())
                 ++stats.klpReleasedLoads;
             finishKlpWait(inst);
             writebackKlpData(inst, request);
-        } else if (!inst->klpDataBuffered) {
-            inst->klpDataBuffered = true;
+        } else if (!inst->klpWaitingForAuthorization) {
+            inst->klpWaitingForAuthorization = true;
             inst->statsUpdated[5] = true;
             inst->stallCycStart = cpu->curCycle();
             ++stats.klpHeldLoads;
@@ -990,7 +1031,7 @@ LSQUnit::noteKlpViolation(const DynInstPtr &trigger,
     const bool bytes = trigger->effSize && victim->effSize &&
         (a <= b ? b - a < trigger->effSize : a - b < victim->effSize);
     const auto &diag = cpu->klpTimingStats.state(*victim);
-    const unsigned flags = (victim->klpDataBuffered ? 1 : 0) |
+    const unsigned flags = (victim->klpWaitingForAuthorization ? 1 : 0) |
         (diag.stlfEverBlocked ? 2 : 0) | (victim->isExecuted() ? 4 : 0) |
         (victim->isUncondi() ? 8 : 0) | (has_request ? 16 : 0);
     stats.klpDiag.recordViolation(trigger->pcState().instAddr(),
@@ -1000,16 +1041,48 @@ LSQUnit::noteKlpViolation(const DynInstPtr &trigger,
 void
 LSQUnit::finishKlpWait(const DynInstPtr &inst)
 {
-    if (!inst->klpDataBuffered)
+    if (!inst->klpWaitingForAuthorization)
         return;
     auto &diag = cpu->klpTimingStats.state(*inst);
     diag.releaseValid = true;
     diag.releaseCycle = cpu->curCycle();
-    inst->klpDataBuffered = false;
+    inst->klpWaitingForAuthorization = false;
     inst->statsUpdated[6] = true;
     inst->stallCycEnd = cpu->curCycle();
     stats.klpWaitCycles += static_cast<uint64_t>(
         inst->stallCycEnd - inst->stallCycStart);
+}
+
+bool
+LSQUnit::canPrepareKlpData(const DynInstPtr &inst, LSQRequest *request) const
+{
+    return inst->supportsKlpEarlyData() && request && request->_size &&
+        request->_size <= 8 && !inst->inHtmTransactionalState() &&
+        !request->mainReq()->isUncacheable() &&
+        !request->mainReq()->isStrictlyOrdered() &&
+        !request->mainReq()->isLocalAccess() &&
+        !request->mainReq()->isLLSC() && !request->mainReq()->isMasked();
+}
+
+bool
+LSQUnit::prepareKlpData(const DynInstPtr &inst, LSQRequest *request,
+                        PacketPtr pkt)
+{
+    assert(canPrepareKlpData(inst, request));
+    assert(!inst->klpDataPrepared && !inst->isSquashed() &&
+           inst->seqNum <= klpSquashAfter && inst->fault == NoFault);
+    if (!lsq->takeKlpDataPort()) {
+        ++stats.klpPrfWriteStalls;
+        return false;
+    }
+    inst->prepareKlpLoadData(pkt);
+    ++stats.klpPrfPreparations;
+    noteKlpDataReady(inst);
+    request->releaseKlpPayload();
+    DPRINTF(KLPDEBUG, "LQ PRF prepared [sn:%llu] pc=%#x fault=%d "
+            "executed=%d\n", inst->seqNum, inst->pcState().instAddr(),
+            inst->fault != NoFault, inst->isExecuted());
+    return true;
 }
 
 void
@@ -1024,41 +1097,25 @@ LSQUnit::writebackKlpData(const DynInstPtr &inst, LSQRequest *request,
             diag.releaseCycle = cpu->curCycle();
         }
     }
-    // Uncondi can release many held loads at once too. Keep its old same-cycle
-    // completion when a slot exists, otherwise use the same bounded path as
-    // installation events. Normal cache responses obey this limit as well.
     if (!defer_writeback && !iewStage->prepareKlpWriteback())
         defer_writeback = true;
     request->klpResultDelivered = true;
-    const bool forwarded = !request->klpForwardData.empty() &&
-                           inst->fault == NoFault;
-    if (forwarded || defer_writeback) {
-        assert(!forwarded || request->klpForwardData.size() == request->_size);
-        // Keep the original request attached for snoops and response cleanup.
-        // Its packets can still write memData; only this private copy supplies
-        // rd. The WritebackEvent also pins the request across a squash.
-        auto *data = new Packet(request->mainReq(), MemCmd::ReadResp);
-        data->allocate();
-        std::memcpy(data->getPtr<uint8_t>(), forwarded ?
-            request->klpForwardData.data() :
-            request->mainPacket()->getConstPtr<uint8_t>(), request->_size);
-        if (forwarded) {
+    if (inst->klpDataPrepared) {
+        ++stats.klpPrfPublications;
+        if (request->klpDataFromEvent && inst->fault == NoFault) {
             ++stats.forwLoads;
             ++stats.klpEventStoreForwards;
         }
-        if (defer_writeback) {
-            // Retirement runs after IEW::writebackInsts. Inserting into its
-            // already-consumed buffer here would miss dependency wakeup.
-            // As for normal STLF, run after this CPU tick has advanced the
-            // time buffer, so the next broadcast stage consumes the result.
-            cpu->schedule(new WritebackEvent(inst, data, this, true), curTick());
-        } else {
-            writeback(inst, data);
-            delete data;
-        }
-        request->klpForwardData.clear();
+    }
+    // Prepared loads need only their instruction/authorization state. Other
+    // access types borrow their request's packet, pinned by WritebackEvent.
+    // Neither path allocates a private payload while waiting for publication.
+    PacketPtr pkt = inst->klpDataPrepared ? nullptr : request->mainPacket();
+    if (defer_writeback) {
+        cpu->schedule(new WritebackEvent(inst, pkt, this, true, false),
+                      curTick());
     } else {
-        writeback(inst, request->mainPacket());
+        writeback(inst, pkt);
     }
 }
 
@@ -1294,6 +1351,18 @@ LSQUnit::LSQUnitStats::LSQUnitStats(statistics::Group *parent)
                "Loads selecting installation-event store data for completion"),
       ADD_STAT(klpWritebackRetries, statistics::units::Count::get(),
                "Deferred KLP completions waiting for writeback space"),
+      ADD_STAT(klpPrfPreparations, statistics::units::Count::get(),
+               "Scalar cache/event loads consuming their data before publication"),
+      ADD_STAT(klpPayloadReleases, statistics::units::Count::get(),
+               "Load transport payloads released after preparing the PRF"),
+      ADD_STAT(klpPayloadBytesReleased, statistics::units::Count::get(),
+               "Bytes of load transport storage freed independently of authorization"),
+      ADD_STAT(klpPrfWriteStalls, statistics::units::Count::get(),
+               "Load data preparations waiting for finite PRF write bandwidth"),
+      ADD_STAT(klpPrfPublications, statistics::units::Count::get(),
+               "Prepared load completions released without a payload copy"),
+      ADD_STAT(klpEventDataAlreadyPrepared, statistics::units::Count::get(),
+               "Store event matches retaining an already selected load result"),
       ADD_STAT(klpDisjointCandidates, statistics::units::Count::get(),
                "Store/load pairs sharing a physical granule but no bytes"),
       ADD_STAT(klpDisjointWriterBlocked, statistics::units::Count::get(),
@@ -1605,17 +1674,16 @@ LSQUnit::checkSnoop(PacketPtr pkt)
                         pkt->getAddr(), ld_inst->seqNum);
 
                 ++stats.klpDiag.snoopReexec;
-                if (ld_inst->klpDataBuffered)
+                if (ld_inst->klpWaitingForAuthorization)
                     ++stats.klpDiag.snoopReexecHeld;
                 // Mark the load for re-execution
                 ld_inst->fault = std::make_shared<ReExec>();
                 request->setStateToFault();
-                if (ld_inst->klpDataBuffered) {
-                    ld_inst->klpDataBuffered = false;
+                if (ld_inst->klpWaitingForAuthorization) {
+                    ld_inst->klpWaitingForAuthorization = false;
                     ld_inst->klpNeedsInstall = false;
-                    // A held forwarding copy may precede the cache reply.
+                    // A prepared result may precede the cache reply.
                     // Deliver ReExec once and suppress that later completion.
-                    request->klpForwardData.clear();
                     writebackKlpData(ld_inst, request);
                 }
             } else {
@@ -2113,7 +2181,7 @@ LSQUnit::squash(const InstSeqNum &squashed_num)
         // Observe discarded waiting intervals before clearing functional state.
         const auto &diag_inst = loadQueue.back().instruction();
         auto &diag = cpu->klpTimingStats.state(*diag_inst);
-        if (diag_inst->klpDataBuffered) {
+        if (diag_inst->klpWaitingForAuthorization) {
             ++stats.klpDiag.squashedHeld;
             if (diag.cacheHoldValid)
                 stats.klpDiag.heldToSquash.sample(static_cast<uint64_t>(
@@ -2126,7 +2194,7 @@ LSQUnit::squash(const InstSeqNum &squashed_num)
                 cpu->curCycle() - diag.stlfBlockStartCycle));
         // Clear the smart pointer to make sure it is decremented.
         loadQueue.back().instruction()->setSquashed();
-        loadQueue.back().instruction()->klpDataBuffered = false;
+        loadQueue.back().instruction()->klpWaitingForAuthorization = false;
         loadQueue.back().instruction()->klpNeedsInstall = false;
         loadQueue.back().instruction()->klpStlfBlocked = false;
         loadQueue.back().clear();
@@ -2261,7 +2329,13 @@ LSQUnit::writeback(const DynInstPtr &inst, PacketPtr pkt)
     if (!inst->isExecuted()) {
         inst->setExecuted();
 
-        if (inst->fault == NoFault) {
+        if (inst->klpDataPrepared) {
+            // Normal ISA completion already wrote the PRF (or raised an ISA
+            // fault). Publication must neither read payload nor complete twice.
+            assert(pkt == nullptr);
+            assert(inst->fault != NoFault || inst->isUncondi() ||
+                   inst->getPassTagVeriDynInstCarrier() == triStateVal::TRUE);
+        } else if (inst->fault == NoFault) {
             // Complete access to copy data to proper place.
             inst->completeAcc(pkt);
         } else {

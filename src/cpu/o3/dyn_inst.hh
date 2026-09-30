@@ -130,6 +130,17 @@ class DynInst : public ExecContext, public RefCounted
     /** Completes the access.  Only valid for memory operations. */
     Fault completeAcc(PacketPtr pkt);
 
+    /** Whether a scalar load can consume its response before publication. */
+    bool supportsKlpEarlyData() const;
+
+    /**
+     * Consume a successful cache response using normal ISA load completion.
+     * Writes the physical destination and its provenance, but does not mark
+     * the instruction executed, ready, or eligible for commit. The LSQ owns
+     * response lifetime and releases the result only after authorization.
+     */
+    Fault prepareKlpLoadData(PacketPtr pkt);
+
     /** The sequence number of the instruction. */
     InstSeqNum seqNum = 0;
 
@@ -417,13 +428,16 @@ class DynInst : public ExecContext, public RefCounted
     /* Stats related */
     Cycles stallCycStart = Cycles(0);
     Cycles stallCycEnd = Cycles(0);
-    // LQ validation state belongs to this execution attempt. Data and lock
-    // snapshots remain owned by savedRequest until writeback or squash.
+    // LQ validation state belongs to this execution attempt. The request
+    // retains lock snapshots; eligible cache results wait in the PRF.
     bool klpKeyGenerated = false;
     // Diagnostic snapshots; never used for key generation or authorization.
     AddrProv klpKeyProvenance = noneAddrProv();
     KlpTimingState klpTiming;
-    bool klpDataBuffered = false;
+    bool klpWaitingForAuthorization = false;
+    // ISA completion has consumed the response, including any fault it
+    // returned. Publication must not invoke completeAcc a second time.
+    bool klpDataPrepared = false;
     bool klpNeedsInstall = false;
     bool klpStlfBlocked = false;
     InstSeqNum klpStlfStoreSeq = 0;
