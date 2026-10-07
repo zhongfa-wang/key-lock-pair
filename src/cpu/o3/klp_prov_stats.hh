@@ -13,6 +13,32 @@ namespace gem5
 namespace o3
 {
 
+/** Per-dynamic-load accounting, retained across retries and stats resets. */
+struct KlpThresholdLoadState
+{
+    uint64_t firstExecutionEpoch = 0;
+    bool stalled = false;
+
+    bool noteExecution(uint64_t epoch)
+    {
+        if (firstExecutionEpoch)
+            return false;
+        firstExecutionEpoch = epoch;
+        return true;
+    }
+
+    bool noteStall(uint64_t epoch, const AddrProv &prov)
+    {
+        // A load begun before reset is outside the new denominator cohort.
+        if (firstExecutionEpoch != epoch || stalled ||
+            prov.state != AddrProv::State::AMBIGUOUS ||
+            !prov.thresholdIntroducedAmbiguity)
+            return false;
+        stalled = true;
+        return true;
+    }
+};
+
 /** Bounded, observational diagnostics; never participates in authorization. */
 class KlpProvStats : public statistics::Group
 {
@@ -22,6 +48,11 @@ class KlpProvStats : public statistics::Group
 
     explicit KlpProvStats(statistics::Group *parent);
     void resetStats() override;
+    void preDumpStats() override;
+    // Sample the address-source provenance on the first execution attempt,
+    // using the same dynamic-load cohort as executedLoads.
+    void recordLoadExecution(KlpThresholdLoadState &state, const AddrProv &prov);
+    void recordThresholdStall(KlpThresholdLoadState &state, const AddrProv &prov);
 
     // Call once at the requested observation point. This class does not
     // deduplicate dynamic instructions, retries, or STLF attempts.
@@ -47,12 +78,19 @@ class KlpProvStats : public statistics::Group
     std::map<LoadKey, unsigned> loadKeys;
     std::map<ProducerKey, unsigned> producerKeys;
     bool takingOver = false;
+    uint64_t loadEpoch = 1;
 
     unsigned loadSlot(Addr pc, const AddrProv &prov);
     unsigned producerSlot(Addr pc, const char *mnemonic,
                           AddrProvOrigin reason, bool fresh);
     void resetPcLabels();
 
+    statistics::Scalar executedLoads;
+    statistics::Vector executedLoadStates;
+    // Derived at dump time so an empty epoch produces finite zero fractions.
+    statistics::Vector executedLoadStateFractions;
+    statistics::Scalar thresholdStalledLoads;
+    statistics::Value thresholdStalledLoadFraction;
     statistics::Vector checkStates;
     statistics::Vector holdStates;
     statistics::Vector stlfBlockedStates;

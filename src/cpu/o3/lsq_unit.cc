@@ -992,6 +992,8 @@ LSQUnit::noteKlpDataReady(const DynInstPtr &inst)
 void
 LSQUnit::noteKlpHold(const DynInstPtr &inst)
 {
+    cpu->klpProvStats.recordThresholdStall(inst->klpThresholdLoadStats,
+                                         inst->klpKeyProvenance);
     auto &diag = cpu->klpTimingStats.state(*inst);
     if (!diag.cacheHoldValid) {
         diag.cacheHoldValid = true;
@@ -1806,6 +1808,14 @@ LSQUnit::executeLoad(const DynInstPtr &inst)
         return NoFault;
     }
 
+    if (cpu->isKlpEnabled()) {
+        // RISC-V loads use source operand 0 as the address base. Sample it
+        // before initiateAcc(), which can already check or stall a load.
+        const AddrProv addr_prov = inst->staticInst->numSrcRegs() ?
+            inst->getAddrProvOperand(inst->staticInst.get(), 0) : noneAddrProv();
+        cpu->klpProvStats.recordLoadExecution(inst->klpThresholdLoadStats,
+                                             addr_prov);
+    }
     load_fault = inst->initiateAcc();
 
     if (load_fault == NoFault && !inst->readMemAccPredicate()) {
@@ -2746,6 +2756,9 @@ LSQUnit::read(LSQRequest *request, ssize_t load_idx)
                         store_inst->seqNum, match, !known,
                         load_inst->isUncondi());
                 if (!load_inst->isUncondi() && !match) {
+                    cpu->klpProvStats.recordThresholdStall(
+                        load_inst->klpThresholdLoadStats,
+                        load_inst->klpKeyProvenance);
                     const bool store_known =
                         store_inst->getIsBaseUnknown() == triStateVal::FALSE;
                     const unsigned reason = !known ?

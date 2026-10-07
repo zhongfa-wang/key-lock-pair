@@ -51,6 +51,8 @@ enum class AddrProvOrigin : uint8_t {
     LoadSeed,
     BothNegative,
     CompareUnavailable,
+    ThresholdBothAbove,
+    ThresholdNeitherAbove,
     NumOrigins
 };
 
@@ -70,6 +72,9 @@ struct AddrProv
     // Semantic marker for an AUIPC address awaiting its completing operation.
     // Only a value-preserving copy may propagate this marker unchanged.
     bool auipcPending = false;
+    // Diagnostic only: this ambiguity was introduced by the threshold policy,
+    // while the old policy on the same inputs would not have been AMBIGUOUS.
+    bool thresholdIntroducedAmbiguity = false;
 };
 
 /*
@@ -144,8 +149,11 @@ propagateBasePreserving(const AddrProv &src)
         return weakAddrProv(src.candidate, src.origin, src.originPc);
       case AddrProv::State::STRONG:
         return strongAddrProv(src.candidate, src.origin, src.originPc);
-      case AddrProv::State::AMBIGUOUS:
-        return ambiguousAddrProv(src.candidate, src.origin, src.originPc);
+      case AddrProv::State::AMBIGUOUS: {
+        auto result = ambiguousAddrProv(src.candidate, src.origin, src.originPc);
+        result.thresholdIntroducedAmbiguity = src.thresholdIntroducedAmbiguity;
+        return result;
+      }
     }
     return ambiguousAddrProv(0);
 }
@@ -166,6 +174,10 @@ enum class AddrProvCompareReason : uint8_t {
     UnsupportedXlen,
     MissingOperand,
     NoExecutionUnit,
+    ThresholdLeft,
+    ThresholdRight,
+    BothAboveThreshold,
+    NeitherAboveThreshold,
     NumReasons
 };
 
@@ -183,7 +195,8 @@ struct AddrProvCompare
 };
 
 /*
- * Fixed-width comparator behavior for the integer execution datapath.
+ * Old fixed-width comparator, retained ONLY for diagnostic attribution.
+ * Its result never controls execution, candidate selection or authorization.
  * Inputs are the already-read/forwarded, original XLEN operands, before any
  * word truncation or SHnADD shift. One negative input selects the nonnegative
  * input; two negative inputs are undecided. Nonnegative inputs use an exact
@@ -196,7 +209,7 @@ struct AddrProvCompare
  * it neither performs a register-file read nor models physical timing closure.
  */
 [[nodiscard]] inline constexpr AddrProvCompare
-compareAddrProvOperands(RegVal lhs, RegVal rhs, unsigned xlen)
+compareAddrProvOperandsLegacy(RegVal lhs, RegVal rhs, unsigned xlen)
 {
     using Selection = AddrProvCompareSelection;
     using Reason = AddrProvCompareReason;
@@ -243,6 +256,42 @@ compareAddrProvOperands(RegVal lhs, RegVal rhs, unsigned xlen)
     return {Selection::Right, Reason::NonnegativeRight, 0};
 }
 
+/*
+ * Execution comparator: two original XLEN inputs independently compare with
+ * the configured threshold. Sign handling precedes threshold classification.
+ * Both-above is ambiguous; neither-above explicitly clears provenance.
+ * The two threshold comparisons are combinational sidecars of the allocated
+ * integer lane, with the existing issue capacity and completion latency.
+ */
+[[nodiscard]] inline constexpr AddrProvCompare
+compareAddrProvOperands(RegVal lhs, RegVal rhs, unsigned xlen, RegVal threshold)
+{
+    using Selection = AddrProvCompareSelection;
+    using Reason = AddrProvCompareReason;
+    if (xlen != 32 && xlen != 64)
+        return {Selection::Undecided, Reason::UnsupportedXlen, 0};
+    const RegVal mask = xlen == 32 ? 0xffffffffULL : ~RegVal{0};
+    lhs &= mask;
+    rhs &= mask;
+    const bool lhs_negative = (lhs >> (xlen - 1)) & 1;
+    const bool rhs_negative = (rhs >> (xlen - 1)) & 1;
+    if (lhs_negative && rhs_negative)
+        return {Selection::Undecided, Reason::BothNegative, 0};
+    if (lhs_negative)
+        return {Selection::Right, Reason::LeftNegative, 0};
+    if (rhs_negative)
+        return {Selection::Left, Reason::RightNegative, 0};
+    const bool left_above = lhs > threshold;
+    const bool right_above = rhs > threshold;
+    if (left_above && right_above)
+        return {Selection::Undecided, Reason::BothAboveThreshold, 0};
+    if (left_above)
+        return {Selection::Left, Reason::ThresholdLeft, 0};
+    if (right_above)
+        return {Selection::Right, Reason::ThresholdRight, 0};
+    return {Selection::Undecided, Reason::NeitherAboveThreshold, 0};
+}
+
 // Existing tie-origin names are retained for diagnostic continuity. New
 // undecided causes must not be mislabeled as numerical equality.
 [[nodiscard]] inline constexpr AddrProv
@@ -250,6 +299,11 @@ undecidedAddrProv(const AddrProvCompare &comparison,
                   AddrProvOrigin tie_origin, Addr producer_pc = 0)
 {
     assert(!comparison.decided());
+    if (comparison.reason == AddrProvCompareReason::NeitherAboveThreshold)
+        return noneAddrProv(AddrProvOrigin::ThresholdNeitherAbove, producer_pc);
+    if (comparison.reason == AddrProvCompareReason::BothAboveThreshold)
+        return ambiguousAddrProv(0, AddrProvOrigin::ThresholdBothAbove,
+                                 producer_pc);
     if (comparison.reason == AddrProvCompareReason::Equal) {
         return ambiguousAddrProv(comparison.equalValue, tie_origin,
                                  producer_pc);
@@ -375,6 +429,43 @@ selectAddrScaledBasePreserving(RegVal base_value, const AddrProv &base_prov,
         return propagateBasePreserving(base_prov);
     }
     return selected;
+}
+
+/*
+ * Diagnostic attribution against the OLD policy on this producer's captured
+ * inputs. Reuse the actual propagation helpers, including selected-source
+ * state and the rs2-only scaled gate; a successful old comparison alone is
+ * insufficient. This is not a second execution or a shadow legacy machine.
+ */
+[[nodiscard]] inline constexpr bool
+thresholdIntroducesAmbiguity(AddrProvRule rule, bool preserve_add,
+                             RegVal lhs, const AddrProv &lhs_prov,
+                             RegVal rhs, const AddrProv &rhs_prov,
+                             unsigned xlen, const AddrProvCompare &comparison)
+{
+    if (comparison.reason != AddrProvCompareReason::BothAboveThreshold)
+        return false;
+    const auto old = compareAddrProvOperandsLegacy(lhs, rhs, xlen);
+    AddrProv old_result;
+    switch (rule) {
+      case AddrProvRule::Default:
+        old_result = preserve_add ?
+            selectAddrProvPreserving(lhs, lhs_prov, rhs, rhs_prov, old) :
+            selectAddrProvByComparison(lhs, rhs, old);
+        break;
+      case AddrProvRule::PreserveSelected:
+        old_result = propagateAddrProvByComparison(lhs_prov, rhs_prov, old);
+        break;
+      case AddrProvRule::ScaledIndexBase:
+        old_result = selectAddrScaledBaseByComparison(rhs, old);
+        break;
+      case AddrProvRule::ScaledIndexBasePreserve:
+        old_result = selectAddrScaledBasePreserving(rhs, rhs_prov, old);
+        break;
+      default:
+        return false;
+    }
+    return old_result.state != AddrProv::State::AMBIGUOUS;
 }
 
 /*

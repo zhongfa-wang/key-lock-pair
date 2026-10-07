@@ -434,6 +434,7 @@ class DynInst : public ExecContext, public RefCounted
     // Diagnostic snapshots; never used for key generation or authorization.
     AddrProv klpKeyProvenance = noneAddrProv();
     KlpTimingState klpTiming;
+    KlpThresholdLoadState klpThresholdLoadStats;
     bool klpWaitingForAuthorization = false;
     // ISA completion has consumed the response, including any fault it
     // returned. Publication must not invoke completeAcc a second time.

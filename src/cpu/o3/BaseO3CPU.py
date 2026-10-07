@@ -168,6 +168,10 @@ class BaseO3CPU(BaseCPU):
         8, "Active per-load local lock-view entries (1..8); larger footprints "
         "validate only after all cache responses arrive",
     )
+    klpOperandThreshold = Param.UInt64(
+        65536, "Nonnegative KLP operands must straddle this threshold; equality "
+        "belongs to the lower side"
+    )
     klpSeedAbiRoots = Param.Bool(
         True, "Seed SP/GP/TP on simulator register initialization/injection; "
         "false resets all provenance to NONE"

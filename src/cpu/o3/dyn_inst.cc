@@ -453,7 +453,8 @@ DynInst::tryAddrProvCompare()
         return;
     addrProvComparison = klpComparatorFu >= 0 ?
         compareAddrProvOperands(addrProvInputs[0], addrProvInputs[1],
-                                addrProvXlen) :
+                                addrProvXlen,
+                                cpu->params().klpOperandThreshold) :
         AddrProvCompare{AddrProvCompareSelection::Undecided,
                        AddrProvCompareReason::NoExecutionUnit, 0};
     addrProvCompareValid = true;
@@ -614,6 +615,24 @@ DynInst::updateAddrProv()
                     }
                 }
             }
+            if (addrProvCompareNeeded && comparison.reason ==
+                    AddrProvCompareReason::NeitherAboveThreshold) {
+                // Even an AUIPC-pending zero-copy cannot retain metadata when
+                // both nonnegative inputs are at or below the threshold.
+                dest_prov = noneAddrProv(AddrProvOrigin::ThresholdNeitherAbove,
+                                        producer_pc);
+                fresh_origin = true;
+            } else if (dest_prov.state == AddrProv::State::AMBIGUOUS &&
+                       comparison.reason ==
+                           AddrProvCompareReason::BothAboveThreshold) {
+                dest_prov.thresholdIntroducedAmbiguity =
+                    thresholdIntroducesAmbiguity(
+                        staticInst->getAddrProvRule(),
+                        cpu->isKlpEnabled() && xlen == 64 &&
+                            value_op == AddrProvValueOp::PlainAdd,
+                        source_value(0), source_prov(0),
+                        source_value(1), source_prov(1), xlen, comparison);
+            }
         } // Captured inputs and result are available.
         step_reason = dest_prov.origin;
     }
@@ -626,10 +645,11 @@ DynInst::updateAddrProv()
         DPRINTF(KLPDEBUG,
                 "[DynInst] Integer EX provenance. "
                 "Inst PC: %#x, SN: %llu, sources: %u, XLEN: %u, "
-                "state: %u, candidate: %#x.\n",
+                "state: %u, candidate: %#x, threshold_new_ambi: %u.\n",
                 pcState().instAddr(), seqNum,
                 static_cast<unsigned>(numSrcRegs()), xlen,
-                static_cast<unsigned>(dest_prov.state), dest_prov.candidate);
+                static_cast<unsigned>(dest_prov.state), dest_prov.candidate,
+                dest_prov.thresholdIntroducedAmbiguity);
     }
     if (cpu->isKlpEnabled()) {
         for (int idx = 0; idx < numDestRegs(); ++idx) {

@@ -18,23 +18,31 @@ constexpr std::array<const char *, NumOrigins> OriginNames = {
     "logical_tie", "scaled_base_selected", "scaled_index_dominant",
     "scaled_magnitude_tie",
     "arithmetic_selected", "strong_seed", "weak_seed", "constant_seed",
-    "load_seed", "both_negative", "compare_unavailable"
+    "load_seed", "both_negative", "compare_unavailable",
+    "threshold_both_above", "threshold_neither_above"
 };
 constexpr std::array<const char *, 4> StateNames = {
     "none", "weak", "strong", "ambiguous"
+};
+// The first four bins follow AddrProv::State; split marked AMBIGUOUS
+// provenance into a fifth bin without changing the architectural state.
+constexpr std::array<const char *, 5> ExecutedLoadStateNames = {
+    "none", "weak", "strong", "old_ambiguous", "threshold_ambiguous"
 };
 constexpr unsigned NumCompareReasons =
     static_cast<unsigned>(AddrProvCompareReason::NumReasons);
 constexpr std::array<const char *, NumCompareReasons> CompareReasonNames = {
     "nonnegative_left", "nonnegative_right", "left_negative", "right_negative",
     "both_negative", "equal", "unsupported_xlen", "missing_operand",
-    "no_execution_unit"
+    "no_execution_unit", "threshold_left", "threshold_right",
+    "both_above_threshold", "neither_above_threshold"
 };
 constexpr std::array<const char *, 3> CompareSelectionNames = {
     "left", "right", "undecided"
 };
-constexpr std::array<const char *, 5> ScaledComparisonNames = {
-    "base_selected", "index_selected", "equal", "both_negative", "unavailable"
+constexpr std::array<const char *, 7> ScaledComparisonNames = {
+    "base_selected", "index_selected", "equal", "both_negative", "unavailable",
+    "both_above_threshold", "neither_above_threshold"
 };
 
 unsigned
@@ -54,6 +62,22 @@ unavailable(const AddrProv &prov)
 
 KlpProvStats::KlpProvStats(statistics::Group *parent)
     : statistics::Group(parent, "klpProv"),
+      ADD_STAT(executedLoads, statistics::units::Count::get(),
+               "Dynamic loads first executed in this stats epoch, including "
+               "later squashes; retries count once"),
+      ADD_STAT(executedLoadStates, statistics::units::Count::get(),
+               "Address-source provenance at each dynamic load's first "
+               "execution attempt, including later squashes; ambiguous split "
+               "by the threshold-introduced flag, independent of stalls"),
+      ADD_STAT(executedLoadStateFractions, statistics::units::Ratio::get(),
+               "executedLoadStates / executedLoads at dump time "
+               "(0 for every state when no loads)"),
+      ADD_STAT(thresholdStalledLoads, statistics::units::Count::get(),
+               "Executed loads held at cache or STLF because their own "
+               "provenance carries newly introduced threshold ambiguity; "
+               "once per dynamic load, including later squashes"),
+      ADD_STAT(thresholdStalledLoadFraction, statistics::units::Ratio::get(),
+               "thresholdStalledLoads / executedLoads (0 when no loads)"),
       ADD_STAT(checkStates, statistics::units::Count::get(),
                "EA provenance state at the first complete cache check"),
       ADD_STAT(holdStates, statistics::units::Count::get(),
@@ -86,8 +110,8 @@ KlpProvStats::KlpProvStats(statistics::Group *parent)
                "Scaled-index-base input states, index then unscaled base"),
       ADD_STAT(scaledResults, statistics::units::Count::get(),
                "Directional ADD.UW/shNadd results; known includes inherited "
-               "WEAK/STRONG and fresh STRONG; NONE and inherited_ambiguous "
-               "bins remain zero under the current candidate policy"),
+               "WEAK/STRONG and fresh STRONG; neither-above produces NONE; "
+               "inherited_ambiguous remains zero"),
       ADD_STAT(scaledComparison, statistics::units::Count::get(),
                "Shared operand-comparison outcomes for ADD.UW/shNadd"),
       ADD_STAT(scaledUnknownComparison, statistics::units::Count::get(),
@@ -95,6 +119,17 @@ KlpProvStats::KlpProvStats(statistics::Group *parent)
       ADD_STAT(scaledUnknownComparisonByState, statistics::units::Count::get(),
                "Unknown ADD.UW/shNadd comparison outcomes by input states")
 {
+    for (auto *stat : {&executedLoadStates, &executedLoadStateFractions}) {
+        stat->init(ExecutedLoadStateNames.size()).flags(statistics::total);
+        for (unsigned i = 0; i < ExecutedLoadStateNames.size(); ++i)
+            stat->subname(i, ExecutedLoadStateNames[i]);
+    }
+    executedLoadStateFractions.precision(12);
+    thresholdStalledLoadFraction.functor([this] {
+        return executedLoads.value() ?
+            thresholdStalledLoads.value() / executedLoads.value() : 0.0;
+    });
+    thresholdStalledLoadFraction.precision(12);
     for (auto *stat : {&checkStates, &holdStates, &stlfBlockedStates}) {
         stat->init(StateNames.size());
         stat->flags(statistics::total | statistics::nozero);
@@ -169,10 +204,43 @@ void
 KlpProvStats::resetStats()
 {
     statistics::Group::resetStats();
+    ++loadEpoch;
     loadKeys.clear();
     producerKeys.clear();
     resetPcLabels();
     // Register origin fields intentionally survive stats reset/warmup.
+}
+
+void
+KlpProvStats::preDumpStats()
+{
+    const auto loads = executedLoads.value();
+    for (unsigned i = 0; i < ExecutedLoadStateNames.size(); ++i)
+        executedLoadStateFractions[i] = loads ?
+            executedLoadStates[i].value() / loads : 0.0;
+    statistics::Group::preDumpStats();
+}
+
+void
+KlpProvStats::recordLoadExecution(KlpThresholdLoadState &state,
+                                 const AddrProv &prov)
+{
+    if (!state.noteExecution(loadEpoch))
+        return;
+
+    const unsigned index = prov.state == AddrProv::State::AMBIGUOUS &&
+        prov.thresholdIntroducedAmbiguity ? StateNames.size() :
+        static_cast<unsigned>(prov.state);
+    ++executedLoads;
+    ++executedLoadStates[index];
+}
+
+void
+KlpProvStats::recordThresholdStall(KlpThresholdLoadState &state,
+                                  const AddrProv &prov)
+{
+    if (state.noteStall(loadEpoch, prov))
+        ++thresholdStalledLoads;
 }
 
 unsigned
@@ -291,6 +359,10 @@ KlpProvStats::recordScaled(const AddrProv &index, const AddrProv &base,
         outcome = 2;
     else if (comparison.reason == AddrProvCompareReason::BothNegative)
         outcome = 3;
+    else if (comparison.reason == AddrProvCompareReason::BothAboveThreshold)
+        outcome = 5;
+    else if (comparison.reason == AddrProvCompareReason::NeitherAboveThreshold)
+        outcome = 6;
     ++scaledComparison[outcome];
     if (!unavailable(result)) {
         ++scaledResults[0];
