@@ -48,6 +48,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include "base/addr_range.hh"
@@ -91,6 +92,7 @@ namespace partitioning_policy
 {
     class PartitionManager;
 }
+class GranuleCoverageStats;
 class MSHR;
 class RequestPort;
 class QueueEntry;
@@ -117,6 +119,8 @@ class BaseCache : public ClockedObject
     const bool klpEnabled;
     const bool klpStoreInstall;
     const Cycles klpMetadataLatency;
+    std::unique_ptr<GranuleCoverageStats> granuleCoverage;
+    std::unique_ptr<GranuleCoverageStats> granuleLoadCoverage;
     // Like classic tag/data arrays, metadata has an access latency without
     // a separate physical-port or bank-contention model.
     Tick accessKlpMetadata(Tick arrival, CacheBlk *blk = nullptr,

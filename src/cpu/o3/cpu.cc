@@ -58,6 +58,7 @@
 #include "sim/cur_tick.hh"
 #include "sim/full_system.hh"
 #include "sim/process.hh"
+#include "sim/serialize.hh"
 #include "sim/stat_control.hh"
 #include "sim/system.hh"
 
@@ -68,6 +69,14 @@ struct BaseCPUParams;
 
 namespace o3
 {
+
+namespace
+{
+
+// Bump when the fields, enum meanings, or provenance policy semantics change.
+constexpr unsigned AddrProvCheckpointVersion = 1;
+
+} // anonymous namespace
 
 CPU::CPU(const BaseO3CPUParams &params)
     : BaseCPU(params),
@@ -752,12 +761,140 @@ void
 CPU::serializeThread(CheckpointOut &cp, ThreadID tid) const
 {
     thread[tid]->serialize(cp);
+    serializeAddrProv(cp, tid);
 }
 
 void
 CPU::unserializeThread(CheckpointIn &cp, ThreadID tid)
 {
     thread[tid]->unserialize(cp);
+    // Restoring ordinary register values resets their provenance. Load the
+    // saved metadata afterwards, into this CPU's committed physical mappings.
+    unserializeAddrProv(cp, tid);
+}
+
+void
+CPU::serializeAddrProv(CheckpointOut &cp, ThreadID tid) const
+{
+    ScopedCheckpointSection section(cp, "klpAddrProv");
+    const auto &int_regs = *isa[tid]->regClasses().at(IntRegClass);
+    const unsigned num_regs = int_regs.numRegs();
+    paramOut(cp, "version", AddrProvCheckpointVersion);
+    paramOut(cp, "numIntRegs", num_regs);
+    paramOut(cp, "klpEnabled", isKlpEnabled());
+    paramOut(cp, "tagGenSrc", params().tag_gen_src);
+    paramOut(cp, "operandThreshold", params().klpOperandThreshold);
+    paramOut(cp, "seedAbiRoots", params().klpSeedAbiRoots);
+
+    // Physical indices and speculative mappings are not checkpoint state.
+    // m5.checkpoint drains the CPU; only the committed architectural state
+    // must survive rebuilding the rename maps on a fresh CPU.
+    std::vector<unsigned> state, origin, pending, threshold_ambiguity;
+    std::vector<RegVal> candidate;
+    std::vector<Addr> origin_pc;
+    for (const RegId &reg : int_regs) {
+        const RegId flat = reg.flatten(*isa[tid]);
+        const AddrProv &prov =
+            regFile.getAddrProv(commitRenameMap[tid].lookup(flat));
+        state.push_back(static_cast<unsigned>(prov.state));
+        candidate.push_back(prov.candidate);
+        origin.push_back(static_cast<unsigned>(prov.origin));
+        origin_pc.push_back(prov.originPc);
+        pending.push_back(prov.auipcPending);
+        threshold_ambiguity.push_back(prov.thresholdIntroducedAmbiguity);
+    }
+    arrayParamOut(cp, "state", state);
+    arrayParamOut(cp, "candidate", candidate);
+    arrayParamOut(cp, "origin", origin);
+    arrayParamOut(cp, "originPc", origin_pc);
+    arrayParamOut(cp, "auipcPending", pending);
+    arrayParamOut(cp, "thresholdIntroducedAmbiguity", threshold_ambiguity);
+}
+
+void
+CPU::unserializeAddrProv(CheckpointIn &cp, ThreadID tid)
+{
+    ScopedCheckpointSection section(cp, "klpAddrProv");
+    if (!cp.sectionExists(Serializable::currentSection())) {
+        fatal_if(params().klpRequireCheckpointProvenance,
+                 "%s thread %u: checkpoint has no KLP register provenance "
+                 "but klpRequireCheckpointProvenance is enabled.", name(), tid);
+        warn("%s thread %u: checkpoint has no KLP register provenance; "
+             "retaining register initialization (klpSeedAbiRoots=%d). "
+             "Historical provenance has not been recovered.",
+             name(), tid, params().klpSeedAbiRoots);
+        return;
+    }
+
+    unsigned version;
+    paramIn(cp, "version", version);
+    fatal_if(version != AddrProvCheckpointVersion,
+             "%s thread %u: unsupported KLP provenance checkpoint version "
+             "%u (expected %u).", name(), tid, version,
+             AddrProvCheckpointVersion);
+
+    const auto &int_regs = *isa[tid]->regClasses().at(IntRegClass);
+    const unsigned num_regs = int_regs.numRegs();
+    unsigned saved_num_regs;
+    bool enabled, seed_abi_roots;
+    std::string tag_gen_src;
+    uint64_t operand_threshold;
+    paramIn(cp, "numIntRegs", saved_num_regs);
+    paramIn(cp, "klpEnabled", enabled);
+    paramIn(cp, "tagGenSrc", tag_gen_src);
+    paramIn(cp, "operandThreshold", operand_threshold);
+    paramIn(cp, "seedAbiRoots", seed_abi_roots);
+    fatal_if(saved_num_regs != num_regs,
+             "%s thread %u: KLP provenance register count mismatch "
+             "(checkpoint %u, CPU %u).", name(), tid, saved_num_regs, num_regs);
+    // These settings change how candidates are produced. Cache granularity,
+    // tag width and physical register counts need not match: raw provenance
+    // is independent of those downstream key/cache configuration choices.
+    fatal_if(enabled != isKlpEnabled() || tag_gen_src != params().tag_gen_src ||
+             operand_threshold != params().klpOperandThreshold ||
+             seed_abi_roots != params().klpSeedAbiRoots,
+             "%s thread %u: KLP provenance checkpoint policy mismatch "
+             "(klpEnabled, tagGenSrc, operandThreshold or seedAbiRoots).",
+             name(), tid);
+
+    std::vector<unsigned> state(num_regs), origin(num_regs), pending(num_regs),
+        threshold_ambiguity(num_regs);
+    std::vector<RegVal> candidate(num_regs);
+    std::vector<Addr> origin_pc(num_regs);
+    arrayParamIn(cp, "state", state.data(), num_regs);
+    arrayParamIn(cp, "candidate", candidate.data(), num_regs);
+    arrayParamIn(cp, "origin", origin.data(), num_regs);
+    arrayParamIn(cp, "originPc", origin_pc.data(), num_regs);
+    arrayParamIn(cp, "auipcPending", pending.data(), num_regs);
+    arrayParamIn(cp, "thresholdIntroducedAmbiguity",
+                 threshold_ambiguity.data(), num_regs);
+
+    // Validate everything before updating the register file. In particular,
+    // setAddrProv canonicalizes NONE and must not hide corrupted input.
+    for (unsigned i = 0; i < num_regs; ++i) {
+        fatal_if(state[i] > static_cast<unsigned>(AddrProv::State::AMBIGUOUS) ||
+                 origin[i] >= static_cast<unsigned>(AddrProvOrigin::NumOrigins) ||
+                 pending[i] > 1 || threshold_ambiguity[i] > 1,
+                 "%s thread %u: invalid KLP provenance enum/flag for "
+                 "integer register %u.", name(), tid, i);
+        const auto s = static_cast<AddrProv::State>(state[i]);
+        fatal_if((s == AddrProv::State::NONE && candidate[i] != 0) ||
+                 (pending[i] && s != AddrProv::State::STRONG) ||
+                 (threshold_ambiguity[i] && s != AddrProv::State::AMBIGUOUS),
+                 "%s thread %u: inconsistent KLP provenance for integer "
+                 "register %u.", name(), tid, i);
+    }
+    unsigned i = 0;
+    for (const RegId &reg : int_regs) {
+        const AddrProv prov = {
+            static_cast<AddrProv::State>(state[i]), candidate[i],
+            static_cast<AddrProvOrigin>(origin[i]), origin_pc[i],
+            pending[i] != 0, threshold_ambiguity[i] != 0
+        };
+        const RegId flat = reg.flatten(*isa[tid]);
+        regFile.setAddrProv(commitRenameMap[tid].lookup(flat), prov);
+        ++i;
+    }
 }
 
 DrainState

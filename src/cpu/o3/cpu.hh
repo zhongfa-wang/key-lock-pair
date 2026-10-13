@@ -136,6 +136,10 @@ class CPU : public BaseCPU
         const RegId &flat_reg,
         PhysRegIdPtr phys_reg,
         ThreadID tid);
+
+    /** Checkpoint committed integer provenance by architectural register. */
+    void serializeAddrProv(CheckpointOut &cp, ThreadID tid) const;
+    void unserializeAddrProv(CheckpointIn &cp, ThreadID tid);
     // } [klp]
     /** The tick event used for scheduling CPU ticks. */
     EventFunctionWrapper tickEvent;

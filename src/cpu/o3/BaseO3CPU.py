@@ -176,6 +176,10 @@ class BaseO3CPU(BaseCPU):
         True, "Seed SP/GP/TP on simulator register initialization/injection; "
         "false resets all provenance to NONE"
     )
+    klpRequireCheckpointProvenance = Param.Bool(
+        False, "Reject checkpoints without KLP register provenance; otherwise "
+        "warn and retain the register initialization policy for old checkpoints"
+    )
     klpInstallEventEntries = Param.Unsigned(
         16, "Retirement event FIFO entries per thread; full stalls retirement"
     )

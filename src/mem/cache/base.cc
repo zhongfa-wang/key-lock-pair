@@ -61,6 +61,7 @@
 #include "debug/HWPrefetch.hh"
 #include "enums/CacheLevel.hh"
 #include "mem/cache/compressors/base.hh"
+#include "mem/cache/granule_coverage_stats.hh"
 #include "mem/cache/mshr.hh"
 #include "mem/cache/prefetch/base.hh"
 #include "mem/cache/queue_entry.hh"
@@ -157,6 +158,15 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
         tempBlock->ensureSecTagStorage(blkSize / tag_granularity);
     }
     tags->tagsInit();
+    if (p.granule_coverage_stats && cache_level == enums::CacheLevel::L1D) {
+        fatal_if(!tag_granularity || blkSize % tag_granularity,
+                 "Coverage granularity must be positive and divide "
+                 "the cache line size");
+        granuleCoverage = std::make_unique<GranuleCoverageStats>(
+            this, name(), tagBitMask, tag_granularity);
+        granuleLoadCoverage = std::make_unique<GranuleCoverageStats>(
+            this, name(), tagBitMask, tag_granularity, true);
+    }
     if (prefetcher)
         prefetcher->setParentInfo(system, getProbeManager(), getBlockSize());
 
@@ -1376,6 +1386,13 @@ BaseCache::satisfyRequest(PacketPtr pkt, CacheBlk *blk, bool, bool)
     // assert(!pkt->needsWritable() || blk->isSet(CacheBlk::WritableBit));
     assert(pkt->getOffset(blkSize) + pkt->getSize() <= blkSize);
 
+    // Count each serviced demand target, including the miss that filled the
+    // line. Temporary fill storage has no residency in the L1 tag array.
+    if (granuleCoverage && blk != tempBlock) {
+        granuleCoverage->record(pkt);
+        granuleLoadCoverage->record(pkt);
+    }
+
     if (pkt->isRead())
         exportSecTagMetadata(pkt, blk);
 
@@ -1977,6 +1994,12 @@ BaseCache::allocateBlock(const PacketPtr pkt, PacketList &writebacks)
 void
 BaseCache::invalidateBlock(CacheBlk *blk)
 {
+    if (granuleCoverage && blk != tempBlock && blk->isValid()) {
+        const Addr addr = regenerateBlkAddr(blk);
+        granuleCoverage->endLine(addr, blkSize, blk->isSecure());
+        granuleLoadCoverage->endLine(addr, blkSize, blk->isSecure());
+    }
+
     // If block is still marked as prefetched, then it hasn't been used
     if (blk->wasPrefetched()) {
         prefetcher->prefetchUnused();

@@ -100,6 +100,10 @@ class BaseCache(ClockedObject):
         1, "KLP metadata access latency, parallel to tag/data access; "
         "SRAM port and bank contention are not modeled"
     )
+    granule_coverage_stats = Param.Bool(
+        False, "Track mixed-access and load-only PC/key top-1 coverage "
+        "per L1D tag_granularity residency; host-side statistics only"
+    )
     # } [klp]
 
     size = Param.MemorySize("Capacity")
